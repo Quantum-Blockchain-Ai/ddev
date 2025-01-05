@@ -1,0 +1,2 @@
+webimage_extra_packages: [php7.4-tidy]
+use_dns_when_possible: true

@@ -2,51 +2,59 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/config/types"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/docker/docker/pkg/homedir"
+	log "github.com/sirupsen/logrus"
+	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"os"
-	"strconv"
-	"testing"
-	"time"
-
-	"github.com/drud/ddev/pkg/testcommon"
-	log "github.com/sirupsen/logrus"
-
-	"path/filepath"
-
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/output"
-	asrt "github.com/stretchr/testify/assert"
 	osexec "os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
 )
 
+func init() {
+	globalconfig.EnsureGlobalConfig()
+}
+
 var (
-	// DdevBin is the full path to the drud binary
+	// DdevBin is the full path to the DDEV binary
 	DdevBin   = "ddev"
 	TestSites = []testcommon.TestSite{
 		{
-			Name:                          "TestCmdWordpress",
-			SourceURL:                     "https://github.com/drud/wordpress/archive/v0.4.0.tar.gz",
-			ArchiveInternalExtractionPath: "wordpress-0.4.0/",
-			FilesTarballURL:               "https://github.com/drud/wordpress/releases/download/v0.4.0/files.tar.gz",
-			DBTarURL:                      "https://github.com/drud/wordpress/releases/download/v0.4.0/db.tar.gz",
-			HTTPProbeURI:                  "wp-admin/setup-config.php",
-			Docroot:                       "htdocs",
+			SourceURL:                     "https://wordpress.org/wordpress-5.8.2.tar.gz",
+			ArchiveInternalExtractionPath: "wordpress/",
+			FilesTarballURL:               "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/wordpress5.8.2_files.tar.gz",
+			DBTarURL:                      "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/wordpress5.8.2_db.sql.tar.gz",
+			Docroot:                       "",
 			Type:                          nodeps.AppTypeWordPress,
 			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/readme.html", Expect: "Welcome. WordPress is a very special project to me."},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "this post has a photo"},
+			FilesImageURI:                 "/wp-content/uploads/2021/12/DSCF0436-randy-and-nancy-with-traditional-wedding-out-fit-2048x1536.jpg",
+			Name:                          "TestCmdWordpress",
+			HTTPProbeURI:                  "wp-admin/setup-config.php",
 		},
-		// Drupal6 is used here just because it's smaller and we don't actually
+		// Drupal6 is used here because it is smaller and we do not actually
 		// care much about CMS functionality.
 		{
 			Name:                          "TestCmdDrupal6",
 			SourceURL:                     "https://ftp.drupal.org/files/projects/drupal-6.38.tar.gz",
 			ArchiveInternalExtractionPath: "drupal-6.38/",
-			DBTarURL:                      "https://github.com/drud/ddev_test_tarballs/releases/download/v1.1/drupal6.38_db.tar.gz",
+			DBTarURL:                      "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/drupal6.38_db.tar.gz",
 			FullSiteTarballURL:            "",
-			FilesTarballURL:               "https://github.com/drud/ddev_test_tarballs/releases/download/v1.1/drupal6_files.tar.gz",
+			FilesTarballURL:               "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/drupal6_files.tar.gz",
 			Docroot:                       "",
 			Type:                          nodeps.AppTypeDrupal6,
 			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/CHANGELOG.txt", Expect: "Drupal 6.38, 2016-02-24"},
@@ -62,18 +70,19 @@ func TestMain(m *testing.M) {
 	if os.Getenv("DDEV_BINARY_FULLPATH") != "" {
 		DdevBin = os.Getenv("DDEV_BINARY_FULLPATH")
 	}
-	log.Println("Running ddev with ddev=", DdevBin)
+	log.Println("Running DDEV with ddev=", DdevBin)
 
 	err := os.Setenv("DDEV_NONINTERACTIVE", "true")
 	if err != nil {
 		log.Errorln("could not set noninteractive mode, failed to Setenv, err: ", err)
 	}
 
-	// We don't want the tests reporting to Segment.
+	// We don't want the tests reporting telemetry.
 	_ = os.Setenv("DDEV_NO_INSTRUMENTATION", "true")
+	_ = os.Setenv("MUTAGEN_DATA_DIRECTORY", globalconfig.GetMutagenDataDirectory())
 
 	// If GOTEST_SHORT is an integer, then use it as index for a single usage
-	// in the array. Any value can be used, it will default to just using the
+	// in the array. Any value can be used, it will default to using the
 	// first site in the array.
 	gotestShort := os.Getenv("GOTEST_SHORT")
 	if gotestShort != "" {
@@ -107,7 +116,7 @@ func TestMain(m *testing.M) {
 	err = addSites()
 	if err != nil {
 		removeSites()
-		output.UserOut.Fatalf("addSites() failed: %v", err)
+		util.Failed("addSites() failed: %v", err)
 	}
 
 	log.Debugln("Running tests.")
@@ -128,43 +137,75 @@ func TestMain(m *testing.M) {
 func TestGetActiveAppRoot(t *testing.T) {
 	assert := asrt.New(t)
 
+	// Looking for active approot here should fail, because there is none
 	_, err := ddevapp.GetActiveAppRoot("")
 	assert.Contains(err.Error(), "Please specify a project name or change directories")
 
+	// There is also no project named "potato"
 	_, err = ddevapp.GetActiveAppRoot("potato")
 	assert.Error(err)
 
+	// However, TestSites[0] is running, so we should find it.
 	appRoot, err := ddevapp.GetActiveAppRoot(TestSites[0].Name)
 	assert.NoError(err)
 	assert.Equal(TestSites[0].Dir, appRoot)
 
-	switchDir := TestSites[0].Chdir()
+	origDir, _ := os.Getwd()
+	err = os.Chdir(TestSites[0].Dir)
+	require.NoError(t, err)
 
+	// We should also now be able to get it in the project directory
+	// since it's running and we're in the directory
 	appRoot, err = ddevapp.GetActiveAppRoot("")
 	assert.NoError(err)
 	assert.Equal(TestSites[0].Dir, appRoot)
 
-	switchDir()
+	// Make sure that shell commands show in regular `ddev` output - launch should show
+	b := util.FindBashPath()
+	_, err = exec.RunHostCommand(b, "-c", fmt.Sprintf("%s | grep launch", DdevBin))
+	assert.NoError(err)
+
+	// And we should be able to stop it and find it as well
+	app, err := ddevapp.GetActiveApp("")
+	require.NoError(t, err)
+	err = app.Stop(false, true)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		// Leave it running in case anybody cares
+		err = app.Start()
+		assert.NoError(err)
+	})
+
+	appRoot, err = ddevapp.GetActiveAppRoot(app.Name)
+	assert.NoError(err)
+	assert.Equal(TestSites[0].Dir, appRoot)
 }
 
-// TestCreateGlobalDdevDir checks to make sure that ddev will create a ~/.ddev (and updatecheck)
+// TestCreateGlobalDdevDir checks to make sure that DDEV will create a ~/.ddev (and updatecheck)
 func TestCreateGlobalDdevDir(t *testing.T) {
+	if nodeps.PerformanceModeDefault == types.PerformanceModeMutagen ||
+		(globalconfig.DdevGlobalConfig.IsMutagenEnabled() &&
+			nodeps.PerformanceModeDefault != types.PerformanceModeNone) ||
+		nodeps.NoBindMountsDefault {
+		t.Skip("Skipping because this changes homedir and breaks Mutagen functionality")
+	}
+
 	assert := asrt.New(t)
-
 	origDir, _ := os.Getwd()
-	tmpDir := testcommon.CreateTmpDir("globalDdevCheck")
-	_ = TestSites[0].Chdir()
+	origDdevDir := globalconfig.GetGlobalDdevDirLocation()
 
-	origHome := os.Getenv("HOME")
+	tmpHomeDir := testcommon.CreateTmpDir("globalDdevCheck")
 
 	t.Cleanup(
 		func() {
-			err := os.Chdir(origDir)
+			_, err := exec.RunHostCommand(DdevBin, "poweroff")
 			assert.NoError(err)
-			err = os.RemoveAll(tmpDir)
+			err = os.Chdir(origDir)
 			assert.NoError(err)
-
-			err = os.Setenv("HOME", origHome)
+			err = os.RemoveAll(tmpHomeDir)
 			assert.NoError(err)
 
 			// Because the start will have done a poweroff (new version),
@@ -174,109 +215,217 @@ func TestCreateGlobalDdevDir(t *testing.T) {
 			}
 		})
 
-	// Make sure that the tmpDir/.ddev and tmpDir/.ddev/.update don't exist before we run ddev.
-	_, err := os.Stat(filepath.Join(tmpDir, ".ddev"))
-	assert.Error(err)
-	assert.True(os.IsNotExist(err))
-
-	tmpUpdateFilePath := filepath.Join(tmpDir, ".ddev", ".update")
-	_, err = os.Stat(tmpUpdateFilePath)
-	assert.Error(err)
-	assert.True(os.IsNotExist(err))
+	err := os.Chdir(TestSites[0].Dir)
+	require.NoError(t, err)
 
 	// Change the homedir temporarily
-	err = os.Setenv("HOME", tmpDir)
-	assert.NoError(err)
+	t.Setenv("HOME", tmpHomeDir)
+	t.Setenv("USERPROFILE", tmpHomeDir)
+	// Set $XDG_CONFIG_HOME to empty string, otherwise it will take precedence over $HOME
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	// Make sure that the tmpDir/.ddev and tmpDir/.ddev/.update don't exist before we run ddev.
+	_, err = os.Stat(filepath.Join(tmpHomeDir, ".ddev"))
+	require.Error(t, err)
+	assert.True(os.IsNotExist(err))
+
+	out, err := exec.RunHostCommand(DdevBin, "config", "--auto")
+	require.NoError(t, err, "failed to ddev config --auto, out=%v, err=%v", out, err)
+
+	// Now global .ddev should exist
+	_, err = os.Stat(filepath.Join(tmpHomeDir, ".ddev"))
+	require.NoError(t, err)
+
+	// Make sure we have the .ddev/bin dir we need for docker-compose and Mutagen
+	err = fileutil.CopyDir(filepath.Join(origDdevDir, "bin"), filepath.Join(tmpHomeDir, ".ddev/bin"))
+	require.NoError(t, err)
+
+	// Make sure that tmpHomeDir/.ddev/.update don't exist before we run ddev start
+	tmpUpdateFilePath := filepath.Join(tmpHomeDir, ".ddev", ".update")
+	_, err = os.Stat(tmpUpdateFilePath)
+	require.Error(t, err)
+	assert.True(os.IsNotExist(err))
 
 	// The .update file is only created by ddev start
-	// We have to do the echo technique to get past the prompt about doing a ddev poweroff
-	_, err = exec.RunCommand("bash", []string{"-c", fmt.Sprintf("echo y | %s start", DdevBin)})
-	assert.NoError(err)
+	out, err = exec.RunHostCommand(DdevBin, "start", "-y")
+	assert.NoError(err, "failed to start, out=%v, err=%v", out, err)
 
 	_, err = os.Stat(tmpUpdateFilePath)
 	assert.NoError(err)
-
 }
 
-// TestPoweroffOnNewVersion checks that a poweroff happens when a new ddev version is deployed
+// TestCopyGlobalDdevDir checks to make sure that DDEV will use
+// ddev folder in user's custom dir $XDG_CONFIG_HOME/ddev instead of ~/.ddev
+func TestCopyGlobalDdevDir(t *testing.T) {
+	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
+
+	t.Cleanup(func() {
+		_, err := exec.RunHostCommand(DdevBin, "poweroff")
+		assert.NoError(err)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
+
+		// Because the start will have done a poweroff (new version),
+		// make sure sites are running again.
+		for _, site := range TestSites {
+			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
+		}
+	})
+
+	err := os.Chdir(TestSites[0].Dir)
+	require.NoError(t, err)
+
+	out, err := exec.RunHostCommand(DdevBin, "config", "--auto")
+	require.NoError(t, err, "failed to ddev config --auto, out=%v, err=%v", out, err)
+
+	// Make sure that $XDG_CONFIG_HOME/ddev/.update don't exist before we run ddev start
+	tmpUpdateFilePath := filepath.Join(globalconfig.GetGlobalDdevDir(), ".update")
+	_, err = os.Stat(tmpUpdateFilePath)
+	require.Error(t, err)
+	assert.True(os.IsNotExist(err))
+
+	// The .update file is only created by ddev start
+	out, err = exec.RunHostCommand(DdevBin, "start", "-y")
+	assert.NoError(err, "failed to start, out=%v, err=%v", out, err)
+
+	_, err = os.Stat(tmpUpdateFilePath)
+	assert.NoError(err)
+}
+
+// TestGetGlobalDdevDirLocation checks to make sure that DDEV will use the
+// correct location for its global config. The correct location is:
+// ${XDG_CONFIG_HOME}/ddev if XDG_CONFIG_HOME is set or
+// ~/.ddev if it exists or
+// ~/.config/ddev if it exists
+func TestGetGlobalDdevDirLocation(t *testing.T) {
+	// Test when $XDG_CONFIG_HOME is not set
+	t.Setenv("XDG_CONFIG_HOME", "")
+	ddevDir := globalconfig.GetGlobalDdevDirLocation()
+	// Original ~/.ddev dir location
+	originalGlobalDdevDir := filepath.Join(homedir.Get(), ".ddev")
+	// If test runs on Linux machine, where ~/.config/ddev is used
+	// if ~/.ddev does not exist:
+	if runtime.GOOS == "linux" && !fileutil.IsDirectory(originalGlobalDdevDir) {
+		linuxDdevDir := filepath.Join(homedir.Get(), ".config", "ddev")
+		if fileutil.IsDirectory(linuxDdevDir) {
+			originalGlobalDdevDir = linuxDdevDir
+		}
+	}
+	require.Equal(t, ddevDir, originalGlobalDdevDir)
+	// Test when $XDG_CONFIG_HOME is set
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	// Make sure that the tmpDir/ddev doesn't exist.
+	_, err := os.Stat(filepath.Join(tmpDir, "ddev"))
+	require.Error(t, err)
+	require.True(t, os.IsNotExist(err))
+	// Check that we can get the correct location
+	ddevDir = globalconfig.GetGlobalDdevDirLocation()
+	require.Equal(t, ddevDir, filepath.Join(tmpDir, "ddev"))
+	// When $XDG_CONFIG_HOME is not set,
+	// it should use the default location
+	t.Setenv("XDG_CONFIG_HOME", "")
+	ddevDir = globalconfig.GetGlobalDdevDirLocation()
+	require.Equal(t, ddevDir, originalGlobalDdevDir)
+}
+
+// TestPoweroffOnNewVersion checks that a poweroff happens when a new DDEV version is deployed
 func TestPoweroffOnNewVersion(t *testing.T) {
+	if nodeps.IsWSL2() && dockerutil.IsDockerDesktop() {
+		t.Skip("Fails on Docker Desktop because of the apparent removal of ~/.docker, skipping")
+	}
 	assert := asrt.New(t)
 	var err error
 
 	origDir, _ := os.Getwd()
-
-	tmpGlobal := testcommon.CreateTmpDir(t.Name())
 	err = os.Chdir(TestSites[0].Dir)
 	assert.NoError(err)
 
-	origHome := os.Getenv("HOME")
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
 
 	// Create an extra junk project to make sure it gets shut down on our start
 	junkName := t.Name() + "-tmpjunkproject"
-	tmpJunkProject := testcommon.CreateTmpDir(junkName)
-	err = os.Chdir(tmpJunkProject)
+	_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", junkName)
+
+	tmpJunkProjectDir := testcommon.CreateTmpDir(junkName)
+	err = os.Chdir(tmpJunkProjectDir)
 	assert.NoError(err)
-	_, err = exec.RunCommand(DdevBin, []string{"config", "--auto"})
+	out, err := exec.RunHostCommand(DdevBin, "config", "--project-name", junkName)
+	assert.NoError(err, "out=%s", out)
+	_, err = exec.RunHostCommand(DdevBin, "start", "-y")
 	assert.NoError(err)
-	_, _ = exec.RunCommand(DdevBin, []string{"start", "-y"})
-	assert.NoError(err)
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+
+		t.Logf("attempting to remove project %s", junkName)
+		out, err = exec.RunHostCommand(DdevBin, "delete", "-Oy", junkName)
+		require.NoError(t, err, "failed to remove project %s, out='%s' err=%v", junkName, out, err)
+		t.Logf("Output from 'ddev delete -Oy %s' was '%s'", junkName, out)
+
+		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
+
+		// Because the start has done a poweroff (new DDEV version),
+		// make sure sites are running again.
+		for _, site := range TestSites {
+			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
+		}
+
+		t.Logf("attempting to remove project files in %s", tmpJunkProjectDir)
+		err = os.RemoveAll(tmpJunkProjectDir)
+		if err != nil {
+			t.Logf("failed to remove junk project files in %s: %v", tmpJunkProjectDir, err)
+		}
+	})
 
 	apps := ddevapp.GetActiveProjects()
 	activeCount := len(apps)
 	assert.GreaterOrEqual(activeCount, 2)
 
-	// Change the homedir temporarily
-	err = os.Setenv("HOME", tmpGlobal)
-	assert.NoError(err)
+	app, err := ddevapp.GetActiveApp("")
+	require.NoError(t, err)
+	oldTime, stderr, err := app.Exec(&ddevapp.ExecOpts{
+		Service: "web",
+		Cmd:     "date +%s",
+	})
+	require.NoError(t, err, "failed to run exec: %v, output='%s', stderr='%s'", err, oldTime, stderr)
+	oldTime = strings.Trim(oldTime, "\r\n")
+	oldTimeInt, err := strconv.ParseInt(oldTime, 10, 64)
+	require.NoError(t, err)
 
-	t.Cleanup(
-		func() {
-
-			err = os.RemoveAll(tmpGlobal)
-			assert.NoError(err)
-
-			err = os.Setenv("HOME", origHome)
-			assert.NoError(err)
-
-			err = os.Chdir(tmpJunkProject)
-			assert.NoError(err)
-			_, _ = exec.RunCommand(DdevBin, []string{"delete", "-Oy"})
-
-			err = os.Chdir(origDir)
-			assert.NoError(err)
-			err = os.RemoveAll(tmpJunkProject)
-			assert.NoError(err)
-
-			// Because the start has done a poweroff (new ddev version),
-			// make sure sites are running again.
-			for _, site := range TestSites {
-				_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
-			}
-		})
-
-	newStartTime := time.Now().Unix()
-	// We have to do the echo technique to get past the prompt about doing a ddev poweroff
-	out, err := exec.RunCommand("bash", []string{"-c", fmt.Sprintf("echo y | %s start", DdevBin)})
-	assert.NoError(err)
+	// Make sure we have starting version that is not v0.0
+	globalconfig.DdevGlobalConfig.LastStartedVersion = "v0.1"
+	err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
+	require.NoError(t, err)
+	out, err = exec.RunHostCommand(DdevBin, "start")
+	require.NoError(t, err, "start failed, out='%s', err=%v", out, err)
 	assert.Contains(out, "ddev-ssh-agent container has been removed")
+	assert.Contains(out, "ssh-agent container is running")
 
 	apps = ddevapp.GetActiveProjects()
 	activeCount = len(apps)
 	assert.Equal(activeCount, 1)
 
-	// Verify that the ddev-router and ddev-ssh-agent have just been newly created
+	// Verify that the ddev-router and ddev-ssh-agent have been newly created
 	routerC, err := dockerutil.FindContainerByName("ddev-router")
-	assert.NoError(err)
+	require.NoError(t, err)
 	require.NotEmpty(t, routerC)
 	routerCreateTime := (*routerC).Created
 	sshC, err := dockerutil.FindContainerByName("ddev-ssh-agent")
-	assert.NoError(err)
+	require.NoError(t, err)
 	require.NotEmpty(t, sshC)
 	sshCreateTime := (*sshC).Created
 
 	// router and ssh-agent should have been created within after we started the new project
-	assert.GreaterOrEqual(routerCreateTime, newStartTime)
-	assert.GreaterOrEqual(sshCreateTime, newStartTime)
+	assert.GreaterOrEqual(routerCreateTime, oldTimeInt)
+	assert.GreaterOrEqual(sshCreateTime, oldTimeInt)
 }
 
 // addSites runs `ddev start` on the test apps
@@ -284,14 +433,19 @@ func addSites() error {
 	log.Debugln("Removing any existing TestSites")
 	for _, site := range TestSites {
 		// Make sure the site is gone in case it was hanging around
-		_, _ = exec.RunCommand(DdevBin, []string{"stop", "-RO", site.Name})
+		_, _ = exec.RunHostCommand(DdevBin, "stop", "-RO", site.Name)
 	}
 	log.Debugln("Starting TestSites")
+	origDir, _ := os.Getwd()
+	defer func() {
+		_ = os.Chdir(origDir)
+	}()
 	for _, site := range TestSites {
-		cleanup := site.Chdir()
-		defer cleanup()
-
-		out, err := exec.RunCommand(DdevBin, []string{"start", "-y"})
+		err := os.Chdir(site.Dir)
+		if err != nil {
+			log.Fatalf("Failed to Chdir to %v", site.Dir)
+		}
+		out, err := exec.RunHostCommand(DdevBin, "start", "-y")
 		if err != nil {
 			log.Fatalln("Error Output from ddev start:", out, "err:", err)
 		}

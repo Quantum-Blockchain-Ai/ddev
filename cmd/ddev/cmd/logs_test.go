@@ -1,14 +1,16 @@
 package cmd
 
 import (
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/fileutil"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/stretchr/testify/require"
+
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
 )
 
@@ -26,30 +28,45 @@ func TestLogsNoConfig(t *testing.T) {
 	assert.Contains(string(out), "Please specify a project name or change directories")
 }
 
-// TestLogs tests that the ddev logs functionality is working.
-func TestLogs(t *testing.T) {
+// TestCmdLogs tests that the ddev logs functionality is working.
+func TestCmdLogs(t *testing.T) {
+	// Gather reporting about goroutines at exit
+	_ = os.Setenv("DDEV_GOROUTINES", "true")
+
 	assert := asrt.New(t)
 
-	v := TestSites[0]
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
 	// Copy our fatal error php into the docroot of testsite.
 	pwd, err := os.Getwd()
 	assert.NoError(err)
-	err = fileutil.CopyFile(filepath.Join(pwd, "testdata", "logtest.php"), filepath.Join(v.Dir, v.Docroot, "logtest.php"))
-	assert.NoError(err)
-	cleanup := v.Chdir()
 
-	app, err := ddevapp.NewApp(v.Dir, true)
+	err = os.Chdir(site.Dir)
 	assert.NoError(err)
 
-	url := "http://" + v.Name + "." + app.ProjectTLD + "/logtest.php"
-	_, err = testcommon.EnsureLocalHTTPContent(t, url, "Notice to demonstrate logging", 5)
+	logtestFilePath := filepath.Join(site.Dir, site.Docroot, "logtest.php")
+	err = fileutil.CopyFile(filepath.Join(pwd, "testdata", t.Name(), "logtest.php"), logtestFilePath)
 	assert.NoError(err)
 
-	args := []string{"logs"}
-	out, err := exec.RunCommand(DdevBin, args)
-
+	app, err := ddevapp.NewApp(site.Dir, true)
 	assert.NoError(err)
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.Remove(logtestFilePath)
+	})
+	// We have to sync or our logtest.php may not yet be available inside container
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+
+	url := app.GetPrimaryURL() + "/logtest.php"
+	_, err = testcommon.EnsureLocalHTTPContent(t, url, "Notice to demonstrate logging", 10)
+	assert.NoError(err)
+
+	out, err := exec.RunHostCommand(DdevBin, "logs")
+	require.NoError(t, err)
+	testcommon.CheckGoroutineOutput(t, out)
 	assert.Contains(string(out), "Server started")
-	assert.Contains(string(out), "Notice to demonstrate logging", "PHP notice not found for project %s output='%s", v.Name, string(out))
-	cleanup()
+	assert.Contains(string(out), "Notice to demonstrate logging", "PHP notice not found for project %s output='%s", site.Name, string(out))
 }

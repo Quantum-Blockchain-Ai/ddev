@@ -2,23 +2,23 @@ package ddevapp_test
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/nodeps"
-	"github.com/stretchr/testify/require"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	. "github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 /**
- * These tests rely on an external test account managed by DRUD. To run them, you'll
+ * These tests rely on an external test account. To run them, you'll
  * need to set an environment variable called "DDEV_PLATFORM_API_TOKEN" with credentials for
  * this account. If no such environment variable is present, these tests will be skipped.
  *
@@ -26,7 +26,16 @@ import (
  * defined in the constants below.
  */
 
-var platformTestSiteID = "lago3j23xu2w6"
+const platformTestSiteID = "5bviezdszcmrg"
+const platformPullTestSiteEnvironment = "platform-pull"
+const platformPushTestSiteEnvironment = "platform-push"
+
+const platformPullSiteURL = "https://platform-pull-7tsp6cq-5bviezdszcmrg.ca-1.platformsh.site/"
+const platformSiteExpectation = "Super easy vegetarian pasta"
+
+// Note that these tests won't run with GitHub actions on a forked PR.
+// This is a security feature, but means that PRs intended to test this
+// must be done in the DDEV repo.
 
 // TestPlatformPull ensures we can pull backups from platform.sh for a configured environment.
 func TestPlatformPull(t *testing.T) {
@@ -37,63 +46,151 @@ func TestPlatformPull(t *testing.T) {
 	assert := asrt.New(t)
 	var err error
 
-	webEnvSave := globalconfig.DdevGlobalConfig.WebEnvironment
+	require.True(t, isPullSiteValid(platformPullSiteURL, platformSiteExpectation), "platformPullSiteURL %s isn't working right", platformPullSiteURL)
 
-	testDir, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
 	siteDir := testcommon.CreateTmpDir(t.Name())
 
+	err = globalconfig.RemoveProjectInfo(t.Name())
+	require.NoError(t, err)
+
 	err = os.Chdir(siteDir)
 	assert.NoError(err)
-	app, err := NewApp(siteDir, true)
+	app, err := ddevapp.NewApp(siteDir, true)
 	assert.NoError(err)
 	app.Name = t.Name()
-	app.Type = nodeps.AppTypeDrupal9
+	app.Type = nodeps.AppTypeDrupal11
 	err = app.Stop(true, false)
 	require.NoError(t, err)
 	err = app.WriteConfig()
 	require.NoError(t, err)
 
-	globalconfig.DdevGlobalConfig.WebEnvironment = []string{"PLATFORMSH_CLI_TOKEN=" + token}
-	err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
-	assert.NoError(err)
-
 	testcommon.ClearDockerEnv()
 
 	t.Cleanup(func() {
-		globalconfig.DdevGlobalConfig.WebEnvironment = webEnvSave
-		err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
-		assert.NoError(err)
-
 		err = app.Stop(true, false)
 		assert.NoError(err)
 
-		_ = os.Chdir(testDir)
-		err = os.RemoveAll(siteDir)
-		assert.NoError(err)
+		_ = os.Chdir(origDir)
+		_ = os.RemoveAll(siteDir)
 	})
 
-	_, err = exec.RunCommand("bash", []string{"-c", fmt.Sprintf("%s >/dev/null", DdevBin)})
+	err = ddevapp.PopulateExamplesCommandsHomeadditions(app.Name)
 	require.NoError(t, err)
 
-	// Build our platform.yaml from the example file
-	s, err := ioutil.ReadFile(app.GetConfigPath("providers/platform.yaml.example"))
-	require.NoError(t, err)
-	x := strings.Replace(string(s), "project_id:", fmt.Sprintf("project_id: "+platformTestSiteID+"\n#project_id:"), 1)
-	err = ioutil.WriteFile(app.GetConfigPath("providers/platform.yaml"), []byte(x), 0666)
-	assert.NoError(err)
+	app.Docroot = "web"
 	err = app.WriteConfig()
 	require.NoError(t, err)
 
 	provider, err := app.GetProvider("platform")
 	require.NoError(t, err)
+
+	provider.EnvironmentVariables["PLATFORM_PROJECT"] = platformTestSiteID
+	provider.EnvironmentVariables["PLATFORM_ENVIRONMENT"] = platformPullTestSiteEnvironment
+	provider.EnvironmentVariables["PLATFORMSH_CLI_TOKEN"] = token
+
 	err = app.Start()
 	require.NoError(t, err)
 	err = app.Pull(provider, false, false, false)
-	assert.NoError(err)
+	require.NoError(t, err)
 
-	assert.FileExists(filepath.Join(app.GetUploadDir(), "victoria-sponge-umami.jpg"))
-	out, err := exec.RunCommand("bash", []string{"-c", fmt.Sprintf(`echo 'select COUNT(*) from users_field_data where mail="margaret.hopper@example.com";' | %s mysql -N`, DdevBin)})
+	assert.FileExists(filepath.Join(app.GetHostUploadDirFullPath(), "victoria-sponge-umami.jpg"))
+	out, err := exec.RunHostCommand("bash", "-c", fmt.Sprintf(`echo 'select COUNT(*) from users_field_data where mail="margaret.hopper@example.com";' | %s mysql -N`, DdevBin))
 	assert.NoError(err)
 	assert.True(strings.HasPrefix(out, "1\n"))
+}
+
+// TestPlatformPush ensures we can push to platform.sh for a configured environment.
+func TestPlatformPush(t *testing.T) {
+	var token string
+	if token = os.Getenv("DDEV_PLATFORM_API_TOKEN"); token == "" {
+		t.Skipf("No DDEV_PLATFORM_API_TOKEN env var has been set. Skipping %v", t.Name())
+	}
+
+	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
+
+	siteDir := testcommon.CreateTmpDir(t.Name())
+
+	err := os.Chdir(siteDir)
+	require.NoError(t, err)
+
+	err = globalconfig.RemoveProjectInfo(t.Name())
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(siteDir, true)
+	assert.NoError(err)
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+
+		_ = os.Chdir(origDir)
+		_ = os.RemoveAll(siteDir)
+	})
+
+	app.Name = t.Name()
+	app.Type = nodeps.AppTypeDrupal8
+	app.Hooks = map[string][]ddevapp.YAMLTask{"post-push": {{"exec-host": "touch hello-post-push-" + app.Name}}, "pre-push": {{"exec-host": "touch hello-pre-push-" + app.Name}}}
+	_ = app.Stop(true, false)
+
+	app.Docroot = "web"
+
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	testcommon.ClearDockerEnv()
+
+	err = ddevapp.PopulateExamplesCommandsHomeadditions(app.Name)
+	require.NoError(t, err)
+
+	provider, err := app.GetProvider("platform")
+	require.NoError(t, err)
+
+	provider.EnvironmentVariables["PLATFORM_PROJECT"] = platformTestSiteID
+	provider.EnvironmentVariables["PLATFORM_ENVIRONMENT"] = platformPushTestSiteEnvironment
+	provider.EnvironmentVariables["PLATFORMSH_CLI_TOKEN"] = token
+
+	err = app.Start()
+	require.NoError(t, err)
+
+	// Create database and files entries that we can verify after push
+	tval := nodeps.RandomString(10)
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
+		Cmd: fmt.Sprintf(`mysql -e 'CREATE TABLE IF NOT EXISTS %s ( title VARCHAR(255) NOT NULL ); INSERT INTO %s VALUES("%s");'`, t.Name(), t.Name(), tval),
+	})
+	require.NoError(t, err)
+	fName := tval + ".txt"
+	fContent := []byte(tval)
+	err = os.WriteFile(filepath.Join(siteDir, "web/sites/default/files", fName), fContent, 0644)
+	assert.NoError(err)
+
+	err = app.Push(provider, false, false)
+	require.NoError(t, err)
+
+	// Test that the database row was added
+	out, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: fmt.Sprintf(`echo 'SELECT title FROM %s WHERE title="%s";' | PLATFORMSH_CLI_TOKEN=%s platform db:sql --project="%s" --environment="%s"`, t.Name(), tval, token, platformTestSiteID, platformPushTestSiteEnvironment),
+	})
+	require.NoError(t, err)
+	assert.Contains(out, tval)
+
+	// Test that the file arrived there (by rsyncing it back)
+	tmpRsyncDir := filepath.Join("/tmp", t.Name()+util.RandString(5))
+	out, _, err = app.Exec(&ddevapp.ExecOpts{
+		Cmd: fmt.Sprintf(`PLATFORMSH_CLI_TOKEN=%s platform mount:download --yes --quiet --project="%s" --environment="%s" --mount=web/sites/default/files --target=%s && cat %s/%s && rm -rf %s`, token, platformTestSiteID, platformPushTestSiteEnvironment, tmpRsyncDir, tmpRsyncDir, fName, tmpRsyncDir),
+	})
+	require.NoError(t, err)
+	assert.Contains(out, tval)
+
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+
+	assert.FileExists("hello-pre-push-" + app.Name)
+	assert.FileExists("hello-post-push-" + app.Name)
+	err = os.Remove("hello-pre-push-" + app.Name)
+	assert.NoError(err)
+	err = os.Remove("hello-post-push-" + app.Name)
+	assert.NoError(err)
 }

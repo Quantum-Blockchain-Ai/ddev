@@ -3,6 +3,7 @@ package util
 import (
 	"errors"
 	"fmt"
+	"golang.org/x/term"
 	"io"
 	"net/http"
 	"os"
@@ -10,14 +11,17 @@ import (
 	"time"
 
 	"github.com/cheggaaa/pb"
-	"github.com/drud/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/output"
 	log "github.com/sirupsen/logrus"
 )
 
 // DownloadFile retrieves a file.
-func DownloadFile(fp string, url string, progressBar bool) (err error) {
+func DownloadFile(destPath string, url string, progressBar bool) (err error) {
+	if output.JSONOutput || !term.IsTerminal(int(os.Stdin.Fd())) {
+		progressBar = false
+	}
 	// Create the file
-	out, err := os.Create(fp)
+	out, err := os.Create(destPath)
 	if err != nil {
 		return err
 	}
@@ -36,7 +40,7 @@ func DownloadFile(fp string, url string, progressBar bool) (err error) {
 	reader := resp.Body
 	if progressBar {
 
-		bar := pb.New(int(resp.ContentLength)).SetUnits(pb.U_BYTES).Prefix(filepath.Base(fp))
+		bar := pb.New(int(resp.ContentLength)).SetUnits(pb.U_BYTES).Prefix(filepath.Base(destPath))
 		bar.Start()
 
 		// create proxy reader
@@ -84,7 +88,7 @@ func EnsureHTTPStatus(o *HTTPOptions) error {
 	client := &http.Client{
 		Timeout: o.Timeout * time.Second,
 	}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("received http redirect")
 	}
 

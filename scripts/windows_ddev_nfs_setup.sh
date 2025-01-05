@@ -14,7 +14,7 @@ DDEV_WINDOWS_GID=1000
 nfs_addr=127.0.0.1
 
 mkdir -p ~/.ddev
-docker run --rm -t -v "/$HOME/.ddev:/tmp/junker99" busybox:latest ls //tmp/junker99 >/dev/null || ( echo "Docker does not seem to be running or functional, please check it for problems" && exit 101)
+docker run --rm -t -v "/$HOME/.ddev:/tmp/junker99" busybox:stable ls //tmp/junker99 >/dev/null || ( echo "Docker does not seem to be running or functional, please check it for problems" && exit 101)
 
 
 status=uninstalled
@@ -48,7 +48,8 @@ else
 # Additional lines can be added for additional directories or drives.
 ${HOMEDRIVE}${HOMEPATH} > ${HOME}" >"$HOME/.ddev/nfs_exports.txt"
 fi
-sudo nssm install nfsd "${winnfsd}" -id ${DDEV_WINDOWS_UID} ${DDEV_WINDOWS_GID} -addr $nfs_addr -log off -pathFile "\"$HOMEDRIVE$HOMEPATH\.ddev\nfs_exports.txt\""
+exports=$(cygpath  "$HOMEDRIVE$HOMEPATH\.ddev\nfs_exports.txt")
+sudo nssm install nfsd "${winnfsd}" -id ${DDEV_WINDOWS_UID} ${DDEV_WINDOWS_GID} -addr $nfs_addr -log off -pathFile "${exports}"
 sudo nssm start nfsd || true
 sleep 2
 nssm status nfsd

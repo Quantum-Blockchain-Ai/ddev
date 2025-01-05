@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 
 set -o errexit
@@ -31,7 +31,7 @@ if [ ! -z "${DOCKERHUB_PULL_USERNAME:-}" ]; then
   set -x
 fi
 
-rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/homeadditions ~/.ddev/commands
+rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/project_list.yaml ~/.ddev/homeadditions ~/.ddev/commands
 
 # Run any testbot maintenance that may need to be done
 echo "running selfhosted-upgrades.sh"
@@ -49,7 +49,7 @@ docker system prune --volumes --force >/dev/null || true
 ./.github/workflows/sanetestbot.sh
 
 # Update any images that could have changed
-( docker images | awk '/drud/ {print $1":"$2 }' | xargs -L1 docker pull ) || true
+( docker images | awk '/ddev/ {print $1":"$2 }' | xargs -L1 docker pull ) || true
 
 # homebrew sometimes removes /usr/local/etc/my.cnf.d
 mkdir -p "$(brew --prefix)/etc/my.cnf.d"

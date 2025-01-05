@@ -1,20 +1,20 @@
 package ddevapp_test
 
 import (
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/nodeps"
-	"github.com/stretchr/testify/require"
-	"io/ioutil"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	. "github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLocalfilePull ensures we can pull backups from a flat file for a configured environment.
@@ -22,55 +22,64 @@ func TestLocalfilePull(t *testing.T) {
 	assert := asrt.New(t)
 	var err error
 
-	testDir, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
-	siteDir := testcommon.CreateTmpDir(t.Name())
+	tmpDir := testcommon.CreateTmpDir(t.Name())
 
-	err = os.Chdir(siteDir)
-	assert.NoError(err)
-	app, err := NewApp(siteDir, true)
-	assert.NoError(err)
+	err = os.Chdir(tmpDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(tmpDir, true)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+
+		_ = os.Chdir(origDir)
+		_ = os.RemoveAll(tmpDir)
+	})
+
 	app.Name = t.Name()
-	app.Type = nodeps.AppTypeDrupal9
+	app.Type = nodeps.AppTypeDrupal11
+	app.Docroot = "web"
 	err = app.Stop(true, false)
 	require.NoError(t, err)
 	err = app.WriteConfig()
 	require.NoError(t, err)
 
+	// This not only shows us the version but also populates the project's
+	// /mnt/ddev-global-cache/global-commands/ which otherwise doesn't get done until ddev start
+	// This matters when --no-bind-mount=true
+	out, err := exec.RunHostCommand("ddev", "--version")
+	assert.NoError(err)
+	t.Logf("ddev --version=%v", out)
+
 	testcommon.ClearDockerEnv()
 
-	t.Cleanup(func() {
-		err = app.Stop(true, false)
-		assert.NoError(err)
-
-		_ = os.Chdir(testDir)
-		err = os.RemoveAll(siteDir)
-		assert.NoError(err)
-	})
-
-	_, err = exec.Command(DdevBin).CombinedOutput()
+	err = ddevapp.PopulateExamplesCommandsHomeadditions(app.Name)
 	require.NoError(t, err)
 
 	// Build our localfile.yaml from the example file
-	s, err := ioutil.ReadFile(app.GetConfigPath("providers/localfile.yaml.example"))
+	s, err := os.ReadFile(app.GetConfigPath("providers/localfile.yaml.example"))
 	require.NoError(t, err)
-	x := strings.Replace(string(s), "~/Dropbox", path.Join(dockerutil.MassageWindowsHostMountpoint(testDir), "testdata", t.Name()), -1)
-	appRoot := dockerutil.MassageWindowsHostMountpoint(app.AppRoot)
+	x := strings.Replace(string(s), "~/Dropbox", path.Join(util.WindowsPathToCygwinPath(origDir), "testdata", t.Name()), -1)
+	appRoot := util.WindowsPathToCygwinPath(app.AppRoot)
 	x = strings.Replace(x, "/full/path/to/project/root", appRoot, -1)
-	err = ioutil.WriteFile(app.GetConfigPath("providers/localfile.yaml"), []byte(x), 0666)
+	err = os.WriteFile(app.GetConfigPath("providers/localfile.yaml"), []byte(x), 0666)
 	assert.NoError(err)
 	err = app.WriteConfig()
 	require.NoError(t, err)
 
 	provider, err := app.GetProvider("localfile")
 	require.NoError(t, err)
+
 	err = app.Start()
 	require.NoError(t, err)
 	err = app.Pull(provider, false, false, false)
-	assert.NoError(err)
+	require.NoError(t, err)
 
-	assert.FileExists(filepath.Join(app.AppRoot, app.Docroot, app.GetUploadDir(), "docs/developers/building-contributing.md"))
-	out, _, err := app.Exec(&ExecOpts{
+	assert.FileExists(filepath.Join(app.GetHostUploadDirFullPath(), "docs/developers/building-contributing.md"))
+	out, _, err = app.Exec(&ddevapp.ExecOpts{
 		Cmd:     "echo 'select COUNT(*) from users_field_data where mail=\"margaret.hopper@example.com\";' | mysql -N",
 		Service: "db",
 	})

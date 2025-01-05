@@ -3,26 +3,30 @@ package globalconfig_test
 import (
 	"context"
 	"errors"
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/nodeps"
-	"github.com/drud/ddev/pkg/testcommon"
-	asrt "github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"net"
 	"os"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/versionconstants"
+	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	globalconfig.EnsureGlobalConfig()
+}
 
 // TestGetFreePort checks GetFreePort() to make sure it respects
 // ports reserved in DdevGlobalConfig.UsedHostPorts
 // and that the port can actually be bound.
 func TestGetFreePort(t *testing.T) {
-	assert := asrt.New(t)
-
 	dockerIP, err := dockerutil.GetDockerIP()
 	require.NoError(t, err)
 
@@ -33,14 +37,16 @@ func TestGetFreePort(t *testing.T) {
 	// Put 100 used ports in the UsedHostPorts
 	i, err := strconv.Atoi(startPort)
 	i = i + 1
-	max := i + 100
+	maximum := i + 100
 	require.NoError(t, err)
 	ports := []string{}
-	for ; i < max; i++ {
+	for ; i < maximum; i++ {
 		ports = append(ports, strconv.Itoa(i))
 	}
+	// Make sure we have a global config set up.
+	_ = globalconfig.ReadGlobalConfig()
 	err = globalconfig.ReservePorts(t.Name(), ports)
-	assert.NoError(err)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = globalconfig.RemoveProjectInfo(t.Name())
 	})
@@ -48,13 +54,13 @@ func TestGetFreePort(t *testing.T) {
 	for try := 0; try < 5; try++ {
 		port, err := globalconfig.GetFreePort(dockerIP)
 		require.NoError(t, err)
-		assert.NotContains(globalconfig.DdevGlobalConfig.ProjectList["TestGetFreePort"].UsedHostPorts, port)
+		require.NotContains(t, globalconfig.DdevProjectList["TestGetFreePort"].UsedHostPorts, port)
 
 		// Make sure we can actually use the port.
-		dockerCommand := []string{"run", "--rm", "-p" + dockerIP + ":" + port + ":" + port, "busybox:latest"}
-		_, err = exec.RunCommand("docker", dockerCommand)
+		dockerCommand := []string{"run", "--rm", "-p" + dockerIP + ":" + port + ":" + port, versionconstants.BusyboxImage}
+		out, err := exec.RunCommand("docker", dockerCommand)
 
-		assert.NoError(err, "failed to 'docker %v': %v", dockerCommand, err)
+		require.NoError(t, err, "failed to 'docker %v': %v, output='%v'", dockerCommand, err, out)
 	}
 }
 
@@ -74,6 +80,9 @@ func TestSetProjectAppRoot(t *testing.T) {
 
 	// Create a project in a valid directory
 	tmpDir := testcommon.CreateTmpDir(t.Name())
+
+	// Make sure we have valid global config
+	_ = globalconfig.ReadGlobalConfig()
 	err = globalconfig.SetProjectAppRoot(t.Name(), tmpDir)
 	assert.NoError(err)
 
@@ -123,8 +132,8 @@ type internetActiveNetResolverStub struct {
 	err       error
 }
 
-// LookupHost is a custom version of net.LookupHost that just wastes some time and then returns
-func (t internetActiveNetResolverStub) LookupHost(ctx context.Context, _ string) ([]string, error) {
+// LookupIP is a custom version of net.LookupIP that wastes some time and then returns
+func (t internetActiveNetResolverStub) LookupIP(ctx context.Context, _, _ string) ([]net.IP, error) {
 	select {
 	case <-time.After(t.sleepTime):
 	case <-ctx.Done():
@@ -141,7 +150,7 @@ func internetActiveResetVariables() {
 	globalconfig.DdevGlobalConfig.InternetDetectionTimeout = nodeps.InternetDetectionTimeoutDefault
 }
 
-// TestIsInternetActiveErrorOccurred tests if IsInternetActive() returns false when LookupHost returns an error
+// TestIsInternetActiveErrorOccurred tests if IsInternetActive() returns false when LookupIP returns an error
 func TestIsInternetActiveErrorOccurred(t *testing.T) {
 	internetActiveResetVariables()
 
@@ -158,7 +167,7 @@ func TestIsInternetActiveTimeout(t *testing.T) {
 	internetActiveResetVariables()
 
 	globalconfig.IsInternetActiveNetResolver = internetActiveNetResolverStub{
-		sleepTime: 1000 * time.Millisecond,
+		sleepTime: 4000 * time.Millisecond,
 	}
 
 	asrt.False(t, globalconfig.IsInternetActive())
@@ -175,8 +184,8 @@ func TestIsInternetActiveAlreadyChecked(t *testing.T) {
 	asrt.True(t, globalconfig.IsInternetActive())
 }
 
-// TestIsInternetActive tests if IsInternetActive() returns true, when the LookupHost call goes well
-// and if it properly sets the globals so it won't execute the LookupHost again.
+// TestIsInternetActive tests if IsInternetActive() returns true, when the LookupIP call goes well
+// and if it properly sets the globals so it won't execute the LookupIP again.
 func TestIsInternetActive(t *testing.T) {
 	internetActiveResetVariables()
 

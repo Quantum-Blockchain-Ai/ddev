@@ -26,7 +26,7 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 mkdir -p ~/.ddev
-docker run --rm -t -v /$HOME/.ddev:/tmp/junker99 busybox:latest ls //tmp/junker99 >/dev/null || ( echo "Docker does not seem to be running or functional, please check it for problems" && exit 103)
+docker run --rm -t -v /$HOME/.ddev:/tmp/junker99 busybox:stable ls //tmp/junker99 >/dev/null || ( echo "Docker does not seem to be running or functional, please check it for problems" && exit 103)
 
 echo "
 +-------------------------------------------------------------------------+
@@ -61,7 +61,7 @@ echo "== Setting up nfs..."
 # You may need to adapt it to be less restrictive in your environment,
 # or of course just use the firewall to restrict access.
 # You are welcome to edit and limit it to the addresses you prefer.
-# Please see https://ddev.readthedocs.io/en/stable/users/performance/#debianubuntu-linux-nfs-setup
+# Please see https://ddev.readthedocs.io/en/stable/users/install/performance/
 # for more information.
 FILE=/etc/exports
 LINE="${HOME} ${primary_ip}(rw,sync,no_subtree_check)"

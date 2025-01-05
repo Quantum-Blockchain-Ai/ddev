@@ -2,31 +2,40 @@ package testcommon
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/nodeps"
-	asrt "github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"testing"
+	"time"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var DdevBin = "ddev"
+
+func init() {
+	globalconfig.EnsureGlobalConfig()
+}
+
 var TestSites = []TestSite{
 	{
-		Name:                          "",
-		SourceURL:                     "https://github.com/drud/wordpress/archive/v0.4.0.tar.gz",
-		ArchiveInternalExtractionPath: "wordpress-0.4.0/",
-		FilesTarballURL:               "https://github.com/drud/wordpress/releases/download/v0.4.0/files.tar.gz",
-		DBTarURL:                      "https://github.com/drud/wordpress/releases/download/v0.4.0/db.tar.gz",
-		Docroot:                       "htdocs",
+		SourceURL:                     "https://wordpress.org/wordpress-5.8.2.tar.gz",
+		ArchiveInternalExtractionPath: "wordpress/",
+		FilesTarballURL:               "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/wordpress5.8.2_files.tar.gz",
+		DBTarURL:                      "https://github.com/ddev/ddev_test_tarballs/releases/download/v1.1/wordpress5.8.2_db.sql.tar.gz",
+		Docroot:                       "",
 		Type:                          nodeps.AppTypeWordPress,
 		Safe200URIWithExpectation:     URIWithExpect{URI: "/readme.html", Expect: "Welcome. WordPress is a very special project to me."},
+		DynamicURI:                    URIWithExpect{URI: "/", Expect: "this post has a photo"},
+		FilesImageURI:                 "/wp-content/uploads/2021/12/DSCF0436-randy-and-nancy-with-traditional-wedding-out-fit-2048x1536.jpg",
+		Name:                          "TestCmdWordpress",
+		HTTPProbeURI:                  "wp-admin/setup-config.php",
 	},
 }
 
@@ -40,7 +49,7 @@ func TestCreateTmpDir(t *testing.T) {
 	assert.NoError(err, "There is no error when getting directory details")
 	assert.True(dirStat.IsDir(), "Temp Directory created and exists")
 
-	// Clean up tempoary directory and ensure it no longer exists.
+	// Clean up temporary directory and ensure it no longer exists.
 	CleanupDir(testDir)
 	_, err = os.Stat(testDir)
 	assert.Error(err, "Could not stat temporary directory")
@@ -49,45 +58,14 @@ func TestCreateTmpDir(t *testing.T) {
 	}
 }
 
-// TestChdir tests the Chdir function and ensures it will change to a temporary directory and then properly return
-// to the original directory when cleaned up.
-func TestChdir(t *testing.T) {
-	assert := asrt.New(t)
-	// Get the current working directory.
-	startingDir, err := os.Getwd()
-	assert.NoError(err)
-
-	// Create a temporary directory.
-	testDir := CreateTmpDir("TestChdir")
-	assert.NotEqual(startingDir, testDir, "Ensure our starting directory and temporary directory are not the same")
-
-	// Change to the temporary directory.
-	cleanupFunc := Chdir(testDir)
-	currentDir, err := os.Getwd()
-	assert.NoError(err)
-
-	// On OSX this are created under /var, but /var is a symlink to /var/private, so we cannot ensure complete equality of these strings.
-	assert.Contains(currentDir, testDir, "Ensure the current directory is the temporary directory we created")
-	assert.True(reflect.TypeOf(cleanupFunc).Kind() == reflect.Func, "Chdir return is of type function")
-
-	cleanupFunc()
-	currentDir, err = os.Getwd()
-	assert.NoError(err)
-	assert.Equal(currentDir, startingDir, "Ensure we have changed back to the starting directory")
-
-	CleanupDir(testDir)
-}
-
 // TestValidTestSite tests the TestSite struct behavior in the case of a valid configuration.
 func TestValidTestSite(t *testing.T) {
 	assert := asrt.New(t)
-	// Get the current working directory.
-	startingDir, err := os.Getwd()
-	assert.NoError(err, "Could not get current directory.")
 
 	if os.Getenv("DDEV_BINARY_FULLPATH") != "" {
 		DdevBin = os.Getenv("DDEV_BINARY_FULLPATH")
 	}
+	origDir, _ := os.Getwd()
 
 	// It's not ideal to copy/paste this archive around, but we don't actually care about the contents
 	// of the archive for this test, only that it exists and can be extracted. This should (knock on wood)
@@ -95,17 +73,20 @@ func TestValidTestSite(t *testing.T) {
 	site := TestSites[0]
 
 	// If running this with GOTEST_SHORT we have to create the directory, tarball etc.
-	site.Name = "TestValidTestSite"
+	site.Name = t.Name()
 	_, _ = exec.RunCommand(DdevBin, []string{"stop", "-RO", site.Name})
 
-	//nolint: errcheck
-	defer exec.RunCommand(DdevBin, []string{"stop", "-RO", site.Name})
-	//nolint: errcheck
-	defer globalconfig.RemoveProjectInfo(site.Name)
-	err = site.Prepare()
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		_, err := exec.RunCommand(DdevBin, []string{"delete", "-Oy", site.Name})
+		assert.NoError(err)
+		site.Cleanup()
+		_, err = os.Stat(site.Dir)
+		assert.Error(err, "Could not stat temporary directory after cleanup")
+	})
+	err := site.Prepare()
 	require.NoError(t, err, "Prepare() failed on TestSite.Prepare() site=%s, err=%v", site.Name, err)
 
-	assert.NotNil(site.Dir, "Directory is set.")
 	docroot := filepath.Join(site.Dir, site.Docroot)
 	dirStat, err := os.Stat(docroot)
 	assert.NoError(err, "Docroot exists after prepare()")
@@ -114,36 +95,29 @@ func TestValidTestSite(t *testing.T) {
 	}
 	assert.True(dirStat.IsDir(), "Docroot is a directory")
 
-	cleanup := site.Chdir()
-	defer cleanup()
+	err = os.Chdir(site.Dir)
+	require.NoError(t, err)
 
-	currentDir, err := os.Getwd()
-	assert.NoError(err)
+	currentDir, _ := os.Getwd()
 
-	// On OSX this are created under /var, but /var is a symlink to /var/private, so we cannot ensure complete equality of these strings.
-	assert.Contains(currentDir, site.Dir)
-
-	cleanup()
-
-	currentDir, err = os.Getwd()
-	assert.NoError(err)
-	assert.Equal(startingDir, currentDir)
-
-	site.Cleanup()
-	_, err = os.Stat(site.Dir)
-	assert.Error(err, "Could not stat temporary directory after cleanup")
+	assert.Equal(currentDir, site.Dir)
 }
 
 // TestGetLocalHTTPResponse() brings up a project and hits a URL to get the response
 func TestGetLocalHTTPResponse(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows as we always seem to have port conflicts")
+		t.Skip("Skipping on Windows as it always seems to fail starting 2023-04")
+	}
+	if dockerutil.IsColima() || dockerutil.IsLima() {
+		t.Skip("Skipping on Lima/Colima")
 	}
 	// We have to get globalconfig read so CA is known and installed.
 	err := globalconfig.ReadGlobalConfig()
 	require.NoError(t, err)
 
 	assert := asrt.New(t)
+
+	origDir, _ := os.Getwd()
 
 	dockerutil.EnsureDdevNetwork()
 
@@ -155,27 +129,33 @@ func TestGetLocalHTTPResponse(t *testing.T) {
 	// of the archive for this test, only that it exists and can be extracted. This should (knock on wood)
 	//not need to be updated over time.
 	site := TestSites[0]
-	site.Name = "TestGetLocalHTTPResponse"
+	site.Name = t.Name()
 
 	_, _ = exec.RunCommand(DdevBin, []string{"stop", "-RO", site.Name})
-	//nolint: errcheck
-	defer exec.RunCommand(DdevBin, []string{"stop", "-RO", site.Name})
-	//nolint: errcheck
-	defer globalconfig.RemoveProjectInfo(site.Name)
 
 	err = site.Prepare()
 	require.NoError(t, err, "Prepare() failed on TestSite.Prepare() site=%s, err=%v", site.Name, err)
 
-	cleanup := site.Chdir()
-	defer cleanup()
-
 	app := &ddevapp.DdevApp{}
 	err = app.Init(site.Dir)
 	assert.NoError(err)
-	// nolint: errcheck
-	defer app.Stop(true, false)
 
-	for _, pair := range []PortPair{{"80", "443"}, {"8080", "8443"}} {
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+
+		err = app.Stop(true, false)
+		assert.NoError(err)
+
+		app.RouterHTTPSPort = ""
+		app.RouterHTTPPort = ""
+		err = app.WriteConfig()
+		assert.NoError(err)
+
+		site.Cleanup()
+	})
+
+	for _, pair := range []PortPair{{"8000", "8043"}, {"8080", "8443"}} {
 		ClearDockerEnv()
 		app.RouterHTTPPort = pair.HTTPPort
 		app.RouterHTTPSPort = pair.HTTPSPort
@@ -185,59 +165,111 @@ func TestGetLocalHTTPResponse(t *testing.T) {
 		startErr := app.StartAndWait(5)
 		assert.NoError(startErr, "app.StartAndWait failed for port pair %v", pair)
 		if startErr != nil {
-			logs, _ := ddevapp.GetErrLogsFromApp(app, startErr)
-			t.Fatalf("logs from broken container:\n=======\n%s\n========\n", logs)
+			logs, health, _ := ddevapp.GetErrLogsFromApp(app, startErr)
+			t.Fatalf("healthcheck:\n%s\n\nlogs from broken container:\n=======\n%s\n========\n", health, logs)
 		}
 
 		safeURL := app.GetHTTPURL() + site.Safe200URIWithExpectation.URI
-		out, _, err := GetLocalHTTPResponse(t, safeURL)
+
+		// Extra dummy GetLocalHTTPResponse is for mac M1 to try to prime it.
+		_, _, _ = GetLocalHTTPResponse(t, safeURL, 60)
+		out, _, err := GetLocalHTTPResponse(t, safeURL, 60)
 		assert.NoError(err)
 		assert.Contains(out, site.Safe200URIWithExpectation.Expect)
 
-		safeURL = app.GetHTTPSURL() + site.Safe200URIWithExpectation.URI
-		out, _, err = GetLocalHTTPResponse(t, safeURL)
-		assert.NoError(err)
-		assert.Contains(out, site.Safe200URIWithExpectation.Expect)
-
-		// This does the same thing as previous, but worth exercising it here.
-		_, _ = EnsureLocalHTTPContent(t, safeURL, site.Safe200URIWithExpectation.Expect)
+		// Skip the https version if we don't have mkcert working
+		if globalconfig.GetCAROOT() != "" {
+			safeURL = app.GetHTTPSURL() + site.Safe200URIWithExpectation.URI
+			out, _, err = GetLocalHTTPResponse(t, safeURL, 60)
+			assert.NoError(err)
+			assert.Contains(out, site.Safe200URIWithExpectation.Expect)
+			// This does the same thing as previous, but worth exercising it here.
+			_, _ = EnsureLocalHTTPContent(t, safeURL, site.Safe200URIWithExpectation.Expect)
+		}
 	}
-	// Set the ports back to the default was so we don't break any following tests.
-	app.RouterHTTPSPort = "443"
-	app.RouterHTTPPort = "80"
-	err = app.WriteConfig()
-	assert.NoError(err)
 
-	err = app.Stop(true, false)
-	assert.NoError(err)
-
-	cleanup()
-
-	site.Cleanup()
 }
 
 // TestGetCachedArchive tests download and extraction of archives for test sites
 // to testcache directory.
 func TestGetCachedArchive(t *testing.T) {
-	assert := asrt.New(t)
-
-	sourceURL := "https://raw.githubusercontent.com/drud/ddev/master/.gitignore"
+	sourceURL := "https://raw.githubusercontent.com/ddev/ddev/master/.gitignore"
 	exPath, archPath, err := GetCachedArchive("TestInvalidArchive", "test", "", sourceURL)
-	assert.Error(err)
+	require.Error(t, err)
 	if err != nil {
-		assert.Contains(err.Error(), fmt.Sprintf("archive extraction of %s failed", archPath))
+		require.Contains(t, err.Error(), fmt.Sprintf("archive extraction of %s failed", archPath))
 	}
 
-	err = os.RemoveAll(filepath.Dir(exPath))
-	assert.NoError(err)
+	err = os.RemoveAll(exPath)
+	require.NoError(t, err)
+
+	err = os.RemoveAll(archPath)
+	require.NoError(t, err)
 
 	sourceURL = "http://invalid_domain/somefilethatdoesnotexists"
 	exPath, archPath, err = GetCachedArchive("TestInvalidDownloadURL", "test", "", sourceURL)
-	assert.Error(err)
-	if err != nil {
-		assert.Contains(err.Error(), fmt.Sprintf("Failed to download url=%s into %s", sourceURL, archPath))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), fmt.Sprintf("failed to download url=%s into %s", sourceURL, archPath))
+
+	err = os.RemoveAll(exPath)
+	require.NoError(t, err)
+
+	err = os.RemoveAll(archPath)
+	require.NoError(t, err)
+}
+
+// TestPretestAndEnv tests that the testsite PretestCmd works along with WebEvironment
+func TestPretestAndEnv(t *testing.T) {
+	assert := asrt.New(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	site := TestSites[0]
+	site.Name = t.Name()
+
+	_, _ = exec.RunCommand(DdevBin, []string{"delete", "-Oy", site.Name})
+
+	site.WebEnvironment = []string{"SOMEVAR=somevar"}
+	site.PretestCmd = fmt.Sprintf("%s exec 'touch /var/tmp/%s'", DdevBin, t.Name())
+	err = site.Prepare()
+	require.NoError(t, err, "Prepare() failed on TestSite.Prepare() site=%s, err=%v", site.Name, err)
+
+	err = os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	app := &ddevapp.DdevApp{}
+	err = app.Init(site.Dir)
+	assert.NoError(err)
+
+	t.Cleanup(func() {
+		site.WebEnvironment = []string{}
+		site.PretestCmd = ""
+
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = globalconfig.RemoveProjectInfo(site.Name)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+
+	if runtime.GOOS == "windows" && app.IsMutagenEnabled() {
+		// We can't replace mutagen.exe on windows if anything has been using it
+		ddevapp.PowerOff()
+		err = ddevapp.MutagenReset(app)
+		require.NoError(t, err)
+		time.Sleep(1000 * time.Millisecond)
 	}
 
-	err = os.RemoveAll(filepath.Dir(exPath))
-	assert.NoError(err)
+	err = app.Start()
+	require.NoError(t, err)
+	somevar, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "printf ${SOMEVAR}",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "somevar", somevar, "did not find env var SOMEVAR=somevar; output=%s", somevar)
+
+	out, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: fmt.Sprintf("ls -l /var/tmp/%s", t.Name()),
+	})
+	require.NoError(t, err, "Error testing for existence of /var/tmp/%s; output=%s", t.Name(), out)
 }

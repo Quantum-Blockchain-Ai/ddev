@@ -2,17 +2,18 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/nodeps"
-	"github.com/mitchellh/go-homedir"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
-	"path/filepath"
-
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/config/types"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -24,13 +25,19 @@ var (
 	// docrootRelPathArg is the relative path to the docroot where index.php is.
 	docrootRelPathArg string
 
+	// composerRootRelPathArg allows a user to define the Composer root directory for the web service.
+	composerRootRelPathArg string
+
+	// composerRootRelPathDefaultArg allows a user to unset a web service Composer root directory override.
+	composerRootRelPathDefaultArg bool
+
 	// projectNameArg is the name of the site.
 	projectNameArg string
 
-	// projectTypeArg is the ddev app type, like drupal7/drupal8/wordpress.
+	// projectTypeArg is the DDEV app type, like drupal7/drupal8/wordpress.
 	projectTypeArg string
 
-	// phpVersionArg overrides the default version of PHP to be used in the web container, like 5.6/7.0/7.1/7.2/7.3/7.4/8.0.
+	// phpVersionArg overrides the default version of PHP to be used in the web container, like 5.6-8.4 etc.
 	phpVersionArg string
 
 	// httpPortArg overrides the default HTTP port (80).
@@ -54,9 +61,6 @@ var (
 	// showConfigLocation, if set, causes the command to show the config location.
 	showConfigLocation bool
 
-	// uploadDirArg allows a user to set the project's upload directory, the destination directory for import-files.
-	uploadDirArg string
-
 	// webserverTypeArgs allows a user to set the project's webserver type
 	webserverTypeArg string
 
@@ -69,14 +73,8 @@ var (
 	// dbImageArg allows a user to set the project's db server container image
 	dbImageArg string
 
-	// dbImageDefaultArg allows a user to uset the specific db server container image
+	// dbImageDefaultArg allows a user to use the specific db server container image
 	dbImageDefaultArg bool
-
-	// dbaImageArg allows a user to set the project's dba container image
-	dbaImageArg string
-
-	// dbaImageDefaultArg allows a user to unset the specific dba container image
-	dbaImageDefaultArg bool
 
 	// imageDefaultsArg allows a user to unset all specific container images
 	imageDefaultsArg bool
@@ -93,23 +91,11 @@ var (
 	// defaultDbaWorkingDirArg allows a user to unset a db service working directory override
 	dbWorkingDirDefaultArg bool
 
-	// dbaWorkingDirArg allows a user to define the working directory for the dba service
-	dbaWorkingDirArg string
-
-	// dbaWorkingDirDefaultArg allows a user to unset a dba service working directory override
-	dbaWorkingDirDefaultArg bool
-
 	// workingDirDefaultsArg allows a user to unset all service working directory overrides
 	workingDirDefaultsArg bool
 
 	// omitContainersArg allows user to determine value of omit_containers
 	omitContainersArg string
-
-	// mariadbVersionArg is mariadb version 5.5-10.5
-	mariaDBVersionArg string
-
-	// nfsMountEnabled sets nfs_mount_enabled
-	nfsMountEnabled bool
 
 	// failOnHookFail sets fail_on_hook_fail
 	failOnHookFail bool
@@ -123,13 +109,9 @@ var (
 	// hostHTTPSPortArg sets host_https_port
 	hostHTTPSPortArg string
 
-	// mailhogPortArg is arg for mailhog port
-	mailhogPortArg      string
-	mailhogHTTPSPortArg string
-
-	// phpMyAdminPortArg is arg for phpmyadmin container port access
-	phpMyAdminPortArg      string
-	phpMyAdminHTTPSPortArg string
+	// mailpitHTTPPortArg is arg for mailpit port
+	mailpitHTTPPortArg  string
+	mailpitHTTPSPortArg string
 
 	// projectTLDArg specifies a project top-level-domain; defaults to ddevapp.DdevDefaultTLD
 	projectTLDArg string
@@ -141,6 +123,9 @@ var (
 	ngrokArgs string
 
 	webEnvironmentLocal string
+
+	// ddevVersionConstraint sets a ddev version constraint to validate the ddev against
+	ddevVersionConstraint string
 )
 
 var providerName = nodeps.ProviderDefault
@@ -149,9 +134,9 @@ var providerName = nodeps.ProviderDefault
 var extraFlagsHandlingFunc func(cmd *cobra.Command, args []string, app *ddevapp.DdevApp) error
 
 // ConfigCommand represents the `ddev config` command
-var ConfigCommand *cobra.Command = &cobra.Command{
+var ConfigCommand = &cobra.Command{
 	Use:     "config [provider or 'global']",
-	Short:   "Create or modify a ddev project configuration in the current directory",
+	Short:   "Create or modify a DDEV project configuration in the current directory",
 	Example: `"ddev config" or "ddev config --docroot=web  --project-type=drupal8"`,
 	Args:    cobra.ExactArgs(0),
 	Run:     handleConfigRun,
@@ -164,7 +149,7 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 		util.Failed(err.Error())
 	}
 
-	homeDir, _ := homedir.Dir()
+	homeDir, _ := os.UserHomeDir()
 	if app.AppRoot == filepath.Dir(globalconfig.GetGlobalDdevDir()) || app.AppRoot == homeDir {
 		util.Failed("Please do not use `ddev config` in your home directory")
 	}
@@ -177,9 +162,6 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 	err = app.ProcessHooks("pre-config")
 	if err != nil {
 		util.Failed(err.Error())
-	}
-
-	if err != nil {
 		util.Failed("Failed to process hook 'pre-config'")
 	}
 
@@ -188,6 +170,10 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 		err = app.PromptForConfig()
 		if err != nil {
 			util.Failed("There was a problem configuring your project: %v", err)
+		}
+		err = app.WriteConfig()
+		if err != nil {
+			util.Failed("Failed to write config: %v", err)
 		}
 	} else {
 		err = handleMainConfigArgs(cmd, args, app)
@@ -200,11 +186,6 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 				util.Failed("failed to handle per-provider extra flags: %v", err)
 			}
 		}
-	}
-
-	err = app.WriteConfig()
-	if err != nil {
-		util.Failed("Failed to write config: %v", err)
 	}
 
 	_, err = app.CreateSettingsFile()
@@ -225,71 +206,83 @@ func init() {
 
 	validAppTypes := strings.Join(ddevapp.GetValidAppTypes(), ", ")
 	projectTypeUsage := fmt.Sprintf("Provide the project type (one of %s). This is autodetected and this flag is necessary only to override the detection.", validAppTypes)
-	projectNameUsage := fmt.Sprintf("Provide the project name of project to configure (normally the same as the last part of directory name)")
+	projectNameUsage := "Provide the project name of project to configure (normally the same as the last part of directory name)"
 
 	ConfigCommand.Flags().StringVar(&projectNameArg, "project-name", "", projectNameUsage)
 	ConfigCommand.Flags().StringVar(&docrootRelPathArg, "docroot", "", "Provide the relative docroot of the project, like 'docroot' or 'htdocs' or 'web', defaults to empty, the current directory")
+	ConfigCommand.Flags().StringVar(&composerRootRelPathArg, "composer-root", "", "Overrides the default Composer root directory for the web service")
+	ConfigCommand.Flags().BoolVar(&composerRootRelPathDefaultArg, "composer-root-default", false, "Unsets a web service Composer root directory override")
 	ConfigCommand.Flags().StringVar(&projectTypeArg, "project-type", "", projectTypeUsage)
 	ConfigCommand.Flags().StringVar(&phpVersionArg, "php-version", "", "The version of PHP that will be enabled in the web container")
-	ConfigCommand.Flags().StringVar(&httpPortArg, "http-port", "", "The router HTTP port for this project")
-	ConfigCommand.Flags().StringVar(&httpsPortArg, "https-port", "", "The router HTTPS port for this project")
+	ConfigCommand.Flags().StringVar(&httpPortArg, "http-port", "", "The router HTTP port for this project; deprecated alias for `--router-http-port`")
+	_ = ConfigCommand.Flags().MarkDeprecated("http-port", "--http-port is a deprecated alias for `--router-http-port`")
+	ConfigCommand.Flags().StringVar(&httpPortArg, "router-http-port", "", "The router HTTP port for this project")
+	ConfigCommand.Flags().StringVar(&httpsPortArg, "https-port", "", "The router HTTPS port for this project; deprecated alias for `--router-https-port`")
+	_ = ConfigCommand.Flags().MarkDeprecated("https-port", "--https-port is a deprecated alias for `--router-https-port`")
+	ConfigCommand.Flags().StringVar(&httpsPortArg, "router-https-port", "", "The router HTTPS port for this project")
 	ConfigCommand.Flags().BoolVar(&xdebugEnabledArg, "xdebug-enabled", false, "Whether or not XDebug is enabled in the web container")
 	ConfigCommand.Flags().BoolVar(&noProjectMountArg, "no-project-mount", false, "Whether or not to skip mounting project code into the web container")
 	ConfigCommand.Flags().StringVar(&additionalHostnamesArg, "additional-hostnames", "", "A comma-delimited list of hostnames for the project")
 	ConfigCommand.Flags().StringVar(&additionalFQDNsArg, "additional-fqdns", "", "A comma-delimited list of FQDNs for the project")
 	ConfigCommand.Flags().StringVar(&omitContainersArg, "omit-containers", "", "A comma-delimited list of container types that should not be started when the project is started")
-	ConfigCommand.Flags().StringVar(&webEnvironmentLocal, "web-environment", "", `Add environment variables to web container: --web-environment="TYPO3_CONTEXT=Development,SOMEENV=someval"`)
-	ConfigCommand.Flags().BoolVar(&createDocroot, "create-docroot", false, "Prompts ddev to create the docroot if it doesn't exist")
+	ConfigCommand.Flags().StringVar(&webEnvironmentLocal, "web-environment", "", `Set the environment variables in the web container: --web-environment="TYPO3_CONTEXT=Development,SOMEENV=someval"`)
+	ConfigCommand.Flags().StringVar(&webEnvironmentLocal, "web-environment-add", "", `Append environment variables to the web container: --web-environment="TYPO3_CONTEXT=Development,SOMEENV=someval"`)
+	ConfigCommand.Flags().BoolVar(&createDocroot, "create-docroot", false, "Prompts DDEV to create the docroot if it doesn't exist")
+	_ = ConfigCommand.Flags().MarkDeprecated("create-docroot", "--create-docroot flag is no longer required")
 	ConfigCommand.Flags().BoolVar(&showConfigLocation, "show-config-location", false, "Output the location of the config.yaml file if it exists, or error that it doesn't exist.")
-	ConfigCommand.Flags().StringVar(&uploadDirArg, "upload-dir", "", "Sets the project's upload directory, the destination directory of the import-files command.")
-	ConfigCommand.Flags().StringVar(&webserverTypeArg, "webserver-type", "", "Sets the project's desired webserver type: nginx-fpm or apache-fpm")
+	ConfigCommand.Flags().StringSlice("upload-dirs", []string{}, "Sets the project's upload directories, the destination directories of the import-files command.")
+	ConfigCommand.Flags().String("upload-dir", "", "Sets the project's upload directories, the destination directories of the import-files command.")
+	_ = ConfigCommand.Flags().MarkDeprecated("upload-dir", "please use --upload-dirs instead")
+	ConfigCommand.Flags().StringVar(&webserverTypeArg, "webserver-type", "", "Sets the project's desired webserver type: nginx-fpm/apache-fpm")
 	ConfigCommand.Flags().StringVar(&webImageArg, "web-image", "", "Sets the web container image")
-	ConfigCommand.Flags().BoolVar(&webImageDefaultArg, "web-image-default", false, "Sets the default web container image for this ddev version")
+	ConfigCommand.Flags().BoolVar(&webImageDefaultArg, "web-image-default", false, "Sets the default web container image for this DDEV version")
 	ConfigCommand.Flags().StringVar(&dbImageArg, "db-image", "", "Sets the db container image")
-	ConfigCommand.Flags().BoolVar(&dbImageDefaultArg, "db-image-default", false, "Sets the default db container image for this ddev version")
-	ConfigCommand.Flags().StringVar(&dbaImageArg, "dba-image", "", "Sets the dba container image")
-	ConfigCommand.Flags().BoolVar(&dbaImageDefaultArg, "dba-image-default", false, "Sets the default dba container image for this ddev version")
-	ConfigCommand.Flags().BoolVar(&imageDefaultsArg, "image-defaults", false, "Sets the default web, db, and dba container images")
+	ConfigCommand.Flags().BoolVar(&dbImageDefaultArg, "db-image-default", false, "Sets the default db container image for this DDEV version")
+	ConfigCommand.Flags().BoolVar(&imageDefaultsArg, "image-defaults", false, "Sets the default web and db container images")
 	ConfigCommand.Flags().StringVar(&webWorkingDirArg, "web-working-dir", "", "Overrides the default working directory for the web service")
 	ConfigCommand.Flags().StringVar(&dbWorkingDirArg, "db-working-dir", "", "Overrides the default working directory for the db service")
-	ConfigCommand.Flags().StringVar(&dbaWorkingDirArg, "dba-working-dir", "", "Overrides the default working directory for the dba service")
 	ConfigCommand.Flags().BoolVar(&webWorkingDirDefaultArg, "web-working-dir-default", false, "Unsets a web service working directory override")
 	ConfigCommand.Flags().BoolVar(&dbWorkingDirDefaultArg, "db-working-dir-default", false, "Unsets a db service working directory override")
-	ConfigCommand.Flags().BoolVar(&dbaWorkingDirDefaultArg, "dba-working-dir-default", false, "Unsets a dba service working directory override")
 	ConfigCommand.Flags().BoolVar(&workingDirDefaultsArg, "working-dir-defaults", false, "Unsets all service working directory overrides")
-	ConfigCommand.Flags().StringVar(&mariaDBVersionArg, "mariadb-version", "10.2", "mariadb version to use (incompatible with --mysql-version)")
-	ConfigCommand.Flags().String("mysql-version", "", "Oracle mysql version to use (incompatible with --mariadb-version)")
+	ConfigCommand.Flags().Bool("mutagen-enabled", false, "Enable Mutagen asynchronous update of project in web container")
+	_ = ConfigCommand.Flags().MarkDeprecated("mutagen-enabled", fmt.Sprintf("please use --%s instead", types.FlagPerformanceModeName))
+	ConfigCommand.Flags().String(types.FlagPerformanceModeName, types.FlagPerformanceModeDefault, types.FlagPerformanceModeDescription(types.ConfigTypeProject))
+	ConfigCommand.Flags().Bool(types.FlagPerformanceModeResetName, true, types.FlagPerformanceModeResetDescription(types.ConfigTypeProject))
 
-	ConfigCommand.Flags().BoolVar(&nfsMountEnabled, "nfs-mount-enabled", false, "enable NFS mounting of project in container")
+	ConfigCommand.Flags().Bool("nfs-mount-enabled", false, "Enable NFS mounting of project in container")
+	_ = ConfigCommand.Flags().MarkDeprecated("nfs-mount-enabled", fmt.Sprintf("please use --%s instead", types.FlagPerformanceModeName))
 	ConfigCommand.Flags().BoolVar(&failOnHookFail, "fail-on-hook-fail", false, "Decide whether 'ddev start' should be interrupted by a failing hook")
 	ConfigCommand.Flags().StringVar(&hostWebserverPortArg, "host-webserver-port", "", "The web container's localhost-bound port")
 	ConfigCommand.Flags().StringVar(&hostHTTPSPortArg, "host-https-port", "", "The web container's localhost-bound https port")
 
 	ConfigCommand.Flags().StringVar(&hostDBPortArg, "host-db-port", "", "The db container's localhost-bound port")
-	ConfigCommand.Flags().StringVar(&phpMyAdminPortArg, "phpmyadmin-port", "", "Router port to be used for PHPMyAdmin (dba) container access")
-	ConfigCommand.Flags().StringVar(&phpMyAdminHTTPSPortArg, "phpmyadmin-https-port", "", "Router port to be used for PHPMyAdmin (dba) container access (https)")
 
-	ConfigCommand.Flags().StringVar(&mailhogPortArg, "mailhog-port", "", "Router port to be used for mailhog access")
-	ConfigCommand.Flags().StringVar(&mailhogHTTPSPortArg, "mailhog-https-port", "", "Router port to be used for mailhog access (https)")
+	ConfigCommand.Flags().StringVar(&mailpitHTTPPortArg, "mailpit-http-port", "", "Router HTTP port to be used for Mailpit access")
+	ConfigCommand.Flags().StringVar(&mailpitHTTPPortArg, "mailhog-port", "", "Router port to be used for MailHog access")
+	_ = ConfigCommand.Flags().MarkDeprecated("mailhog-port", "please use --mailpit-http-port instead")
 
-	// projectname flag exists for backwards compatability.
+	ConfigCommand.Flags().StringVar(&mailpitHTTPSPortArg, "mailpit-https-port", "", "Router port to be used for Mailpit access (https)")
+	ConfigCommand.Flags().StringVar(&mailpitHTTPSPortArg, "mailhog-https-port", "", "Router port to be used for MailHog access (https)")
+	_ = ConfigCommand.Flags().MarkDeprecated("mailhog-https-port", "please use --mailpit-https-port instead")
+
+	// projectname flag exists for backwards compatibility.
 	ConfigCommand.Flags().StringVar(&projectNameArg, "projectname", "", projectNameUsage)
-	err = ConfigCommand.Flags().MarkDeprecated("projectname", "The --projectname flag is deprecated in favor of --project-name")
+	err = ConfigCommand.Flags().MarkDeprecated("projectname", "please use --project-name instead")
 	util.CheckErr(err)
 
-	// apptype flag exists for backwards compatability.
+	// apptype flag exists for backwards compatibility.
 	ConfigCommand.Flags().StringVar(&projectTypeArg, "projecttype", "", projectTypeUsage)
-	err = ConfigCommand.Flags().MarkDeprecated("projecttype", "The --projecttype flag is deprecated in favor of --project-type")
+	err = ConfigCommand.Flags().MarkDeprecated("projecttype", "please use --project-type instead")
 	util.CheckErr(err)
 
 	// apptype flag exists for backwards compatibility.
 	ConfigCommand.Flags().StringVar(&projectTypeArg, "apptype", "", projectTypeUsage+" This is the same as --project-type and is included only for backwards compatibility.")
-	err = ConfigCommand.Flags().MarkDeprecated("apptype", "The apptype flag is deprecated in favor of --project-type")
+	err = ConfigCommand.Flags().MarkDeprecated("apptype", "please use --project-type instead")
 	util.CheckErr(err)
 
 	// sitename flag exists for backwards compatibility.
 	ConfigCommand.Flags().StringVar(&projectNameArg, "sitename", "", projectNameUsage+" This is the same as project-name and is included only for backwards compatibility")
-	err = ConfigCommand.Flags().MarkDeprecated("sitename", "The sitename flag is deprecated in favor of --project-name")
+	err = ConfigCommand.Flags().MarkDeprecated("sitename", "please use --project-name instead")
 	util.CheckErr(err)
 
 	ConfigCommand.Flags().String("webimage-extra-packages", "", "A comma-delimited list of Debian packages that should be added to web container when the project is started")
@@ -304,11 +297,19 @@ func init() {
 
 	ConfigCommand.Flags().String("timezone", "", "Specify timezone for containers and php, like Europe/London or America/Denver or GMT or UTC")
 
-	ConfigCommand.Flags().Bool("disable-settings-management", false, "Prevent ddev from creating or updating CMS settings files")
+	ConfigCommand.Flags().Bool("disable-settings-management", false, "Prevent DDEV from creating or updating CMS settings files")
 
-	ConfigCommand.Flags().String("composer-version", "", `Specify override for composer version in web container. This may be "", "1", "2", or a specific version.`)
+	ConfigCommand.Flags().String("composer-version", "", `Specify override for Composer version in web container. This may be "", "1", "2", "2.2", "stable", "preview", "snapshot" or a specific version.`)
 
 	ConfigCommand.Flags().Bool("auto", true, `Automatically run config without prompting.`)
+	ConfigCommand.Flags().Bool("bind-all-interfaces", false, `Bind host ports on all interfaces, not only on the localhost network interface`)
+	ConfigCommand.Flags().String("database", "", fmt.Sprintf(`Specify the database type:version to use. Defaults to mariadb:%s`, nodeps.MariaDBDefaultVersion))
+	ConfigCommand.Flags().String("nodejs-version", "", fmt.Sprintf(`Specify the nodejs version to use if you don't want the default NodeJS %s`, nodeps.NodeJSDefault))
+	ConfigCommand.Flags().Int("default-container-timeout", 120, `default time in seconds that DDEV waits for all containers to become ready on start`)
+	ConfigCommand.Flags().Bool("disable-upload-dirs-warning", true, `Disable warnings about upload-dirs not being set when using performance-mode=mutagen.`)
+	ConfigCommand.Flags().StringVar(&ddevVersionConstraint, "ddev-version-constraint", "", `Specify a ddev version constraint to validate ddev against.`)
+	ConfigCommand.Flags().Bool("corepack-enable", true, `Do 'corepack enable' to enable latest yarn/pnpm'`)
+	ConfigCommand.Flags().Bool("update", false, `Update project settings based on detection and project-type overrides`)
 
 	RootCmd.AddCommand(ConfigCommand)
 
@@ -317,14 +318,14 @@ func init() {
 		Use:    "pantheon",
 		Short:  "ddev config pantheon is no longer needed, see docs",
 		Hidden: true,
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, _ []string) {
 			output.UserOut.Print("`ddev config pantheon` is no longer needed, see docs")
 		},
 	})
 }
 
 // getConfigApp() does the basic setup of the app (with provider) and returns it.
-func getConfigApp(providerName string) (*ddevapp.DdevApp, error) {
+func getConfigApp(_ string) (*ddevapp.DdevApp, error) {
 	appRoot, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("could not determine current working directory: %v", err)
@@ -333,7 +334,7 @@ func getConfigApp(providerName string) (*ddevapp.DdevApp, error) {
 	// Check for an existing config in a parent dir
 	otherRoot, _ := ddevapp.CheckForConf(appRoot)
 	if otherRoot != "" && otherRoot != appRoot {
-		util.Error("Is it possible you wanted to `ddev config` in parent directory %s?", otherRoot)
+		return nil, fmt.Errorf("it usually does not make sense to `ddev config` in a subdirectory of an existing project. Is it possible you wanted to `ddev config` in parent directory %s?", otherRoot)
 	}
 	app, err := ddevapp.NewApp(appRoot, false)
 	if err != nil {
@@ -343,7 +344,7 @@ func getConfigApp(providerName string) (*ddevapp.DdevApp, error) {
 }
 
 // handleMainConfigArgs() validates and processes the main config args (docroot, etc.)
-func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevApp) error {
+func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) error {
 	var err error
 
 	// Support the show-config-location flag.
@@ -372,6 +373,7 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 	app.WarnIfConfigReplace()
 
 	// app.Name gets set to basename if not provided, or set to siteNameArg if provided
+	// nolint:revive
 	if app.Name != "" && projectNameArg == "" { // If we already have a c.Name and no siteNameArg, leave c.Name alone
 		// Sorry this is empty but it makes the logic clearer.
 	} else if projectNameArg != "" { // if we have a siteNameArg passed in, use it for c.Name
@@ -379,37 +381,37 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 	} else { // No siteNameArg passed, c.Name not set: use c.Name from the directory
 		pwd, err := os.Getwd()
 		util.CheckErr(err)
-		app.Name = filepath.Base(pwd)
+		app.Name = ddevapp.NormalizeProjectName(filepath.Base(pwd))
+	}
+
+	err = app.CheckExistingAppInApproot()
+	if err != nil {
+		util.Failed(err.Error())
 	}
 
 	// Ensure that the docroot exists
 	if docrootRelPathArg != "" {
 		app.Docroot = docrootRelPathArg
-		if _, err = os.Stat(docrootRelPathArg); os.IsNotExist(err) {
-			// If the user has indicated that the docroot should be created, create it.
-			if !createDocroot {
-				util.Failed("The provided docroot %s does not exist. Allow ddev to create it with the --create-docroot flag.", docrootRelPathArg)
-			}
-
-			var docrootAbsPath string
-			docrootAbsPath, err = filepath.Abs(app.Docroot)
-			if err != nil {
-				util.Failed("Could not create docroot at %s: %v", docrootRelPathArg, err)
-			}
-
-			if err = os.MkdirAll(docrootAbsPath, 0755); err != nil {
-				util.Failed("Could not create docroot at %s: %v", docrootAbsPath, err)
-			}
-
-			util.Success("Created docroot at %s", docrootAbsPath)
+		if err = app.CreateDocroot(); err != nil {
+			util.Failed("Could not create docroot at %s: %v", app.Docroot, err)
 		}
+		util.Success("Created docroot directory at %s", app.GetAbsDocroot(false))
 	} else if !cmd.Flags().Changed("docroot") {
 		app.Docroot = ddevapp.DiscoverDefaultDocroot(app)
 	}
 
+	// Set Composer root directory overrides
+	if composerRootRelPathArg != "" {
+		app.ComposerRoot = composerRootRelPathArg
+	}
+
+	if composerRootRelPathDefaultArg {
+		app.ComposerRoot = ""
+	}
+
 	if projectTypeArg != "" && !ddevapp.IsValidAppType(projectTypeArg) {
 		validAppTypes := strings.Join(ddevapp.GetValidAppTypes(), ", ")
-		util.Failed("apptype must be one of %s", validAppTypes)
+		util.Failed("Apptype must be one of %s", validAppTypes)
 	}
 
 	detectedApptype := app.DetectAppType()
@@ -417,21 +419,36 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 	if pathErr != nil {
 		util.Failed("Failed to get absolute path to Docroot %s: %v", app.Docroot, pathErr)
 	}
-	if projectTypeArg == "" || projectTypeArg == detectedApptype { // Found an app, matches passed-in or no apptype passed
-		projectTypeArg = detectedApptype
-		util.Success("Found a %s codebase at %s", detectedApptype, fullPath)
-	} else if projectTypeArg != "" { // apptype was passed, but we found no app at all
-		util.Warning("You have specified a project type of %s but no project of that type is found in %s", projectTypeArg, fullPath)
-	} else if projectTypeArg != "" && detectedApptype != projectTypeArg { // apptype was passed, app was found, but not the same type
-		util.Warning("You have specified a project type of %s but a project of type %s was discovered in %s", projectTypeArg, detectedApptype, fullPath)
+
+	doUpdate, _ := cmd.Flags().GetBool("update")
+	switch {
+	case doUpdate:
+		if projectTypeArg == "" {
+			projectTypeArg = detectedApptype
+		}
+
+		app.Type = projectTypeArg
+		util.Success("Auto-updating project configuration because update is requested.\nConfiguring a '%s' project with docroot '%s' at '%s'", app.Type, app.Docroot, fullPath)
+		err = app.ConfigFileOverrideAction(true)
+		if err != nil {
+			util.Warning("ConfigOverrideAction failed: %v")
+		}
+	case app.Type != nodeps.AppTypeNone && projectTypeArg == "" && detectedApptype != app.Type: // apptype was not passed, but we found an app of a different type
+		util.Warning("A project of type '%s' was found in %s, but the project is configured with type '%s'", detectedApptype, fullPath, app.Type)
+	default:
+		if projectTypeArg == "" {
+			projectTypeArg = detectedApptype
+		}
+
+		app.Type = projectTypeArg
+		util.Success("Configuring a '%s' project named '%s' with docroot '%s' at '%s'.\nFor full details use 'ddev describe'.", app.Type, app.Name, app.Docroot, fullPath)
 	}
-	app.Type = projectTypeArg
 
 	// App overrides are done after app type is detected, but
 	// before user-defined flags are set.
-	err = app.ConfigFileOverrideAction()
+	err = app.ConfigFileOverrideAction(false)
 	if err != nil {
-		util.Failed("failed to run ConfigFileOverrideAction: %v", err)
+		util.Failed("Failed to run ConfigFileOverrideAction: %v", err)
 	}
 
 	if phpVersionArg != "" {
@@ -457,97 +474,109 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 		app.HostDBPort = hostDBPortArg
 	}
 
-	// If the mariadb-version changed, use it
-	if cmd.Flag("mariadb-version").Changed {
-		wantVer, err := cmd.Flags().GetString("mariadb-version")
-		if err != nil {
-			util.Failed("Incorrect mariadb-version %s: '%v'", wantVer, err)
-		}
-
-		if app.MySQLVersion != "" && wantVer != "" {
-			util.Failed(`mariadb-version cannot be set if mysql-version is already set. mysql-version is set to %s. Use ddev config --mysql-version="" and then ddev config --mariadb-version=%s`, app.MySQLVersion, wantVer)
-		}
-
-		app.MariaDBVersion = wantVer
-	}
-	// If the mysql-version was changed is set, use it
-	if cmd.Flag("mysql-version").Changed {
-		wantVer, err := cmd.Flags().GetString("mysql-version")
-		if err != nil {
-			util.Failed("Incorrect mysql-version %s: '%v'", wantVer, err)
-		}
-		if app.MariaDBVersion != "" && wantVer != "" {
-			util.Failed(`mysql-version cannot be set if mariadb-version is already set. mariadb-version is set to %s. Use ddev config --mariadb-version="" --mysql-version=%s`, app.MariaDBVersion, wantVer)
-		}
-		app.MySQLVersion = wantVer
-	}
-
 	if cmd.Flag("nfs-mount-enabled").Changed {
-		app.NFSMountEnabled = nfsMountEnabled
+		if v, _ := cmd.Flags().GetBool("nfs-mount-enabled"); v {
+			app.SetPerformanceMode(types.PerformanceModeNFS)
+		}
+	}
+
+	if cmd.Flag("mutagen-enabled").Changed {
+		if v, _ := cmd.Flags().GetBool("mutagen-enabled"); v {
+			app.SetPerformanceMode(types.PerformanceModeMutagen)
+		}
+	}
+
+	if cmd.Flag(types.FlagPerformanceModeName).Changed {
+		performanceMode, _ := cmd.Flags().GetString(types.FlagPerformanceModeName)
+
+		if err := types.CheckValidPerformanceMode(performanceMode, types.ConfigTypeProject); err != nil {
+			util.Error("%s. Not changing value of `performance_mode` option.", err)
+		} else {
+			app.SetPerformanceMode(performanceMode)
+		}
+	}
+
+	if cmd.Flag(types.FlagPerformanceModeResetName).Changed {
+		performanceModeReset, _ := cmd.Flags().GetBool(types.FlagPerformanceModeResetName)
+
+		if performanceModeReset {
+			app.SetPerformanceMode(types.PerformanceModeEmpty)
+		}
 	}
 
 	if cmd.Flag("fail-on-hook-fail").Changed {
 		app.FailOnHookFail = failOnHookFail
 	}
 
-	// This bool flag is false by default, so only use the value if the flag was explicity set.
+	// This bool flag is false by default, so only use the value if the flag was explicitly set.
 	if cmd.Flag("xdebug-enabled").Changed {
 		app.XdebugEnabled = xdebugEnabledArg
 	}
 
-	// This bool flag is false by default, so only use the value if the flag was explicity set.
+	// This bool flag is false by default, so only use the value if the flag was explicitly set.
 	if cmd.Flag("no-project-mount").Changed {
 		app.NoProjectMount = noProjectMountArg
 	}
 
-	if cmd.Flag("phpmyadmin-port").Changed {
-		app.PHPMyAdminPort = phpMyAdminPortArg
+	if cmd.Flag("mailpit-http-port").Changed || cmd.Flag("mailhog-port").Changed {
+		app.MailpitHTTPPort = mailpitHTTPPortArg
 	}
-	if cmd.Flag("phpmyadmin-https-port").Changed {
-		app.PHPMyAdminHTTPSPort = phpMyAdminHTTPSPortArg
-	}
-
-	if cmd.Flag("mailhog-port").Changed {
-		app.MailhogPort = mailhogPortArg
-	}
-	if cmd.Flag("mailhog-https-port").Changed {
-		app.MailhogHTTPSPort = mailhogHTTPSPortArg
+	if cmd.Flag("mailpit-https-port").Changed || cmd.Flag("mailhog-https-port").Changed {
+		app.MailpitHTTPSPort = mailpitHTTPSPortArg
 	}
 
-	if additionalHostnamesArg != "" {
-		app.AdditionalHostnames = strings.Split(additionalHostnamesArg, ",")
-	}
+	// Check if the 'additional-hostnames' flag has been set and not default
+	app.AdditionalHostnames = processFlag(cmd, "additional-hostnames", app.AdditionalHostnames)
 
-	if additionalFQDNsArg != "" {
-		app.AdditionalFQDNs = strings.Split(additionalFQDNsArg, ",")
-	}
+	// Check if the 'additional-fqdns' flag has been set and not default
+	app.AdditionalFQDNs = processFlag(cmd, "additional-fqdns", app.AdditionalFQDNs)
 
-	if omitContainersArg != "" {
-		app.OmitContainers = strings.Split(omitContainersArg, ",")
-	}
+	// Check if the 'omit-containers' flag has been set and not default
+	app.OmitContainers = processFlag(cmd, "omit-containers", app.OmitContainers)
 
 	if cmd.Flag("web-environment").Changed {
-		env := strings.Replace(webEnvironmentLocal, " ", "", -1)
-		if env == "" {
+		env := strings.TrimSpace(webEnvironmentLocal)
+		if env == "" || env == `""` || env == `''` {
 			app.WebEnvironment = []string{}
 		} else {
 			app.WebEnvironment = strings.Split(env, ",")
 		}
 	}
 
+	if cmd.Flag("web-environment-add").Changed {
+		env := strings.TrimSpace(webEnvironmentLocal)
+		if env != "" {
+			envspl := strings.Split(env, ",")
+			conc := append(app.WebEnvironment, envspl...)
+			// Convert to a hashmap to remove duplicate values.
+			hashmap := make(map[string]string)
+			for i := 0; i < len(conc); i++ {
+				hashmap[conc[i]] = conc[i]
+			}
+			keys := []string{}
+			for key := range hashmap {
+				keys = append(keys, key)
+			}
+			app.WebEnvironment = keys
+			sort.Strings(app.WebEnvironment)
+		}
+	}
+
 	if cmd.Flag("webimage-extra-packages").Changed {
-		if cmd.Flag("webimage-extra-packages").Value.String() == "" {
+		val := cmd.Flag("webimage-extra-packages").Value.String()
+		if val == "" || val == `""` || val == `''` {
 			app.WebImageExtraPackages = nil
 		} else {
-			app.WebImageExtraPackages = strings.Split(cmd.Flag("webimage-extra-packages").Value.String(), ",")
+			app.WebImageExtraPackages = strings.Split(val, ",")
 		}
 	}
 
 	if cmd.Flag("dbimage-extra-packages").Changed {
-		if cmd.Flag("dbimage-extra-packages").Value.String() == "" {
+		val := cmd.Flag("dbimage-extra-packages").Value.String()
+		if val == "" || val == `""` || val == `''` {
 			app.DBImageExtraPackages = nil
 		} else {
-			app.DBImageExtraPackages = strings.Split(cmd.Flag("dbimage-extra-packages").Value.String(), ",")
+			app.DBImageExtraPackages = strings.Split(val, ",")
 		}
 	}
 
@@ -577,12 +606,57 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 		}
 	}
 
+	if cmd.Flag("nodejs-version").Changed {
+		app.NodeJSVersion, err = cmd.Flags().GetString("nodejs-version")
+		if err != nil {
+			util.Failed("Incorrect nodejs-version: %v", err)
+		}
+	}
+
 	if cmd.Flag("disable-settings-management").Changed {
 		app.DisableSettingsManagement, _ = cmd.Flags().GetBool("disable-settings-management")
 	}
 
-	if uploadDirArg != "" {
-		app.UploadDir = uploadDirArg
+	if cmd.Flag("bind-all-interfaces").Changed {
+		app.BindAllInterfaces, _ = cmd.Flags().GetBool("bind-all-interfaces")
+	}
+
+	if cmd.Flag("default-container-timeout").Changed {
+		t, _ := cmd.Flags().GetInt("default-container-timeout")
+		app.DefaultContainerTimeout = strconv.Itoa(t)
+		if app.DefaultContainerTimeout == "" {
+			app.DefaultContainerTimeout = nodeps.DefaultDefaultContainerTimeout
+		}
+	}
+
+	if cmd.Flag("database").Changed {
+		raw, err := cmd.Flags().GetString("database")
+		if err != nil {
+			util.Failed("Incorrect value for database: %v", err)
+		}
+		parts := strings.Split(raw, ":")
+		if len(parts) != 2 {
+			util.Failed("Incorrect database value: %s - use something like 'mariadb:10.11' or 'mysql:8.0'. Options are %v", raw, nodeps.GetValidDatabaseVersions())
+		}
+		app.Database.Type = parts[0]
+		app.Database.Version = parts[1]
+	}
+
+	if cmd.Flag("upload-dir").Changed {
+		uploadDirRaw, _ := cmd.Flags().GetString("upload-dir")
+		app.UploadDirs = []string{uploadDirRaw}
+	}
+
+	if cmd.Flag("upload-dirs").Changed {
+		app.UploadDirs, _ = cmd.Flags().GetStringSlice("upload-dirs")
+	}
+
+	if cmd.Flag("disable-upload-dirs-warning").Changed {
+		app.DisableUploadDirsWarning, _ = cmd.Flags().GetBool("disable-upload-dirs-warning")
+	}
+
+	if cmd.Flag("corepack-enable").Changed {
+		app.CorepackEnable, _ = cmd.Flags().GetBool("corepack-enable")
 	}
 
 	if webserverTypeArg != "" {
@@ -597,26 +671,8 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 		app.WebImage = ""
 	}
 
-	if dbImageArg != "" {
-		app.DBImage = dbImageArg
-	}
-
-	if dbImageDefaultArg {
-		app.DBImage = ""
-	}
-
-	if dbaImageArg != "" {
-		app.DBAImage = dbaImageArg
-	}
-
-	if dbaImageDefaultArg {
-		app.DBAImage = ""
-	}
-
 	if imageDefaultsArg {
 		app.WebImage = ""
-		app.DBImage = ""
-		app.DBAImage = ""
 	}
 
 	if app.WorkingDir == nil {
@@ -630,10 +686,6 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 
 	if dbWorkingDirArg != "" {
 		app.WorkingDir["db"] = dbWorkingDirArg
-	}
-
-	if dbaWorkingDirArg != "" {
-		app.WorkingDir["dba"] = dbaWorkingDirArg
 	}
 
 	// If default working directory overrides are requested, they take precedence
@@ -650,8 +702,8 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 		app.WorkingDir["db"] = defaults["db"]
 	}
 
-	if dbaWorkingDirDefaultArg {
-		app.WorkingDir["dba"] = defaults["dba"]
+	if ddevVersionConstraint != "" {
+		app.DdevVersionConstraint = ddevVersionConstraint
 	}
 
 	// Ensure the configuration passes validation before writing config file.
@@ -659,9 +711,37 @@ func handleMainConfigArgs(cmd *cobra.Command, args []string, app *ddevapp.DdevAp
 		return fmt.Errorf("failed to validate config: %v", err)
 	}
 
+	// If the database already exists in volume and is not of this type, then throw an error
+	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") {
+		if dbType, err := app.GetExistingDBType(); err != nil || (dbType != "" && dbType != app.Database.Type+":"+app.Database.Version) {
+			return fmt.Errorf("unable to configure project %s with database type %s because that database type does not match the current actual database. Please change your database type back to %s and start again, export, delete, and then change configuration and start. To get back to existing type use 'ddev config --database=%s', and you can try a migration with 'ddev debug migrate-database %s' see docs at %s", app.Name, app.Database.Type+":"+app.Database.Version, dbType, dbType, app.Database.Type+":"+app.Database.Version, "https://ddev.readthedocs.io/en/stable/users/extend/database-types/")
+		}
+	}
+
 	if err := app.WriteConfig(); err != nil {
-		return fmt.Errorf("could not write ddev config file %s: %v", app.ConfigPath, err)
+		return fmt.Errorf("could not write DDEV config file %s: %v", app.ConfigPath, err)
 	}
 
 	return nil
+}
+
+// processFlag checks if a flag has changed and processes its value accordingly.
+func processFlag(cmd *cobra.Command, flagName string, currentValue []string) []string {
+	// If the flag hasn't changed, return the current value.
+	if !cmd.Flag(flagName).Changed {
+		return currentValue
+	}
+
+	arg := cmd.Flag(flagName).Value.String()
+
+	// Remove all spaces from the flag value.
+	arg = strings.Replace(arg, " ", "", -1)
+
+	// If the flag value is an empty string, return an empty slice.
+	if arg == "" || arg == `""` || arg == `''` {
+		return []string{}
+	}
+
+	// If the flag value is not an empty string, split it by commas and return the resulting slice.
+	return strings.Split(arg, ",")
 }

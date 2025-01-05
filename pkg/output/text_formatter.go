@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"fmt"
+	"golang.org/x/term"
 	"io"
 	"os"
 	"sort"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 // This file is minor adaptations from sirupsen/Logrus at f006c2a (v1.0.3)
@@ -32,7 +32,7 @@ const (
 
 // TextFormatter formats logs into text.
 // This is a specialization of https://github.com/sirupsen/logrus/blob/master/text_formatter.go
-// It's intended to be used for all user-oriented output from ddev
+// It's intended to be used for all user-oriented output from DDEV
 type TextFormatter struct {
 	// Set to true to bypass checking for a TTY before outputting colors.
 	ForceColors bool
@@ -44,7 +44,7 @@ type TextFormatter struct {
 	// system that already adds timestamps.
 	DisableTimestamp bool
 
-	// Enable logging the full timestamp when a TTY is attached instead of just
+	// Enable logging the full timestamp when a TTY is attached instead of
 	// the time passed since beginning of execution.
 	FullTimestamp bool
 
@@ -74,7 +74,7 @@ func (f *TextFormatter) init(entry *log.Entry) {
 func (f *TextFormatter) checkIfTerminal(w io.Writer) bool {
 	switch v := w.(type) {
 	case *os.File:
-		return terminal.IsTerminal(int(v.Fd()))
+		return term.IsTerminal(int(v.Fd()))
 	default:
 		return false
 	}
@@ -127,7 +127,7 @@ func (f *TextFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func (f *TextFormatter) printColored(b *bytes.Buffer, entry *log.Entry, keys []string, timestampFormat string) {
+func (f *TextFormatter) printColored(b *bytes.Buffer, entry *log.Entry, keys []string, _ string) {
 	var levelColor int
 	switch entry.Level {
 	//case log.InfoLevel:
@@ -188,12 +188,12 @@ func (f *TextFormatter) appendValue(b *bytes.Buffer, value interface{}) {
 // This is to not silently overwrite `time`, `msg` and `level` fields when
 // dumping it. If this code wasn't there doing:
 //
-//  logrus.WithField("level", 1).Info("hello")
+//	logrus.WithField("level", 1).Info("hello")
 //
-// Would just silently drop the user provided level. Instead with this code
+// Would silently drop the user provided level. Instead with this code
 // it'll logged as:
 //
-//  {"level": "info", "fields.level": 1, "msg": "hello", "time": "..."}
+//	{"level": "info", "fields.level": 1, "msg": "hello", "time": "..."}
 //
 // It's not exported because it's still using Data in an opinionated way. It's to
 // avoid code duplication between the two default formatters.

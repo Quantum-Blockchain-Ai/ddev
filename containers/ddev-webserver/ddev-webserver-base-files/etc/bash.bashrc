@@ -6,6 +6,18 @@
 # If not running interactively, don't do anything
 [ -z "$PS1" ] && return
 
+# Add ${DDEV_COMPOSER_ROOT:-/var/www/html}/vendor/bin as the first item to the $PATH.
+case ":$PATH:" in
+    # If the item is already in $PATH, don't add it again.
+    *":${DDEV_COMPOSER_ROOT:-/var/www/html}/vendor/bin:"*) ;;
+    # Otherwise, add it.
+    *) PATH="${DDEV_COMPOSER_ROOT:-/var/www/html}/vendor/bin:$PATH" ;;
+esac
+# And don't forget to export the new $PATH.
+export PATH
+# Hide vendor/bin/composer from $PATH.
+export EXECIGNORE="${DDEV_COMPOSER_ROOT:-/var/www/html}/vendor/bin/composer"
+
 # check the window size after each command and, if necessary,
 # update the values of LINES and COLUMNS.
 shopt -s checkwinsize
@@ -17,25 +29,6 @@ fi
 
 # set a fancy prompt (non-color, overwrite the one in /etc/profile)
 PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
-
-# Commented out, don't overwrite xterm -T "title" -n "icontitle" by default.
-# If this is an xterm set the title to user@host:dir
-#case "$TERM" in
-#xterm*|rxvt*)
-#    PROMPT_COMMAND='echo -ne "\033]0;${USER}@${HOSTNAME}: ${PWD}\007"'
-#    ;;
-#*)
-#    ;;
-#esac
-
-# enable bash completion in interactive shells
-#if ! shopt -oq posix; then
-#  if [ -f /usr/share/bash-completion/bash_completion ]; then
-#    . /usr/share/bash-completion/bash_completion
-#  elif [ -f /etc/bash_completion ]; then
-#    . /etc/bash_completion
-#  fi
-#fi
 
 # if the command-not-found package is installed, use it
 if [ -x /usr/lib/command-not-found -o -x /usr/share/command-not-found/command-not-found ]; then
@@ -56,4 +49,5 @@ fi
 
 export HISTFILE=/mnt/ddev-global-cache/bashhistory/${HOSTNAME}/bash_history
 
-export PHP_IDE_CONFIG=serverName=${DDEV_SITENAME}.${DDEV_TLD}
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && source "$NVM_DIR/bash_completion"

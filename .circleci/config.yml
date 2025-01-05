@@ -1,8 +1,8 @@
-version: 2
+version: 2.1
 jobs:
   build:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
       DDEV_NONINTERACTIVE: "true"
@@ -11,18 +11,18 @@ jobs:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-homebrew-v23
+        - linux-homebrew-v33
     - run:
         command: ./.circleci/linux_circle_vm_setup.sh
         name: NORMAL Circle VM setup
         no_output_timeout: "40m"
     - save_cache:
-        key: linux-homebrew-v23
+        key: linux-homebrew-v33
         paths:
           - /home/linuxbrew
     - run:
         command: |
-          make linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_install EXTRA_PATH=/home/linuxbrew/.linuxbrew/bin
+          make linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_arm64_install windows_amd64_install EXTRA_PATH=/home/linuxbrew/.linuxbrew/bin
         name: Build the ddev executables
     - run:
         command: ./.ci-scripts/generate_artifacts.sh ~/artifacts
@@ -37,59 +37,87 @@ jobs:
 
   lx_amd64_fpm_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
       DDEV_TEST_WEBSERVER_TYPE: nginx-fpm
       DDEV_NONINTERACTIVE: "true"
     steps:
     - checkout
+
+      # If this is a PR and the diff doesn't have code, skip it
+    - run:
+        name: "Skip if no code changes"
+        command: |
+          set -x
+          if [ "${CIRCLE_PR_NUMBER}" != "" ] ; then
+            echo "base_revision=<< pipeline.git.base_revision >>"
+            if ! git diff --name-only "<< pipeline.git.base_revision >>" | egrep "^(Makefile|pkg|cmd|vendor|go\.)"; then
+              echo "Skipping build since no code changes found"
+              circleci-agent step halt
+            fi
+          fi
+
     - attach_workspace:
         at: ~/
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
+    - run: 'mkdir -p ~/.ngrok2 && echo "authtoken: ${NGROK_TOKEN}" >~/.ngrok2/ngrok.yml'
     - restore_cache:
         keys:
-        - linux-homebrew-v23
+        - linux-homebrew-v33
     - restore_cache:
         keys:
-          - linux-testcache-v23
-    - run:
-        command: ls -lR ~/.ddev || true
-        name: Check cache contents
+          - linux-testcache-v32
     - run:
         command: ./.circleci/linux_circle_vm_setup.sh
         name: Circle VM setup
         no_output_timeout: "40m"
     - save_cache:
-        key: linux-homebrew-v23
+        key: linux-homebrew-v33
         paths:
           - /home/linuxbrew
+    - run: echo "$(docker --version) $(docker-compose --version)"
     - run:
-        command: make -s testpkg TESTARGS='-run "(TestDdevLive.*|TestPantheon.*|TestPlatform.*|TestAcquia*|TestFlat*|Test*Pull|TestDdevFullSite.*)"' EXTRA_PATH=/home/linuxbrew/.linuxbrew/bin
-        name: ddev tests
+        name: ddev tests - TestPull and TestDdevFullSiteSetup
+        command: make -s testpkg TESTARGS='-run "(TestDdevFullSite.*|Test.*Pull)"' EXTRA_PATH=/home/linuxbrew/.linuxbrew/bin
         no_output_timeout: "40m"
     - store_test_results:
         path: /tmp/testresults
     - save_cache:
-        key: linux-testcache-v23
+        key: linux-testcache-v32
         paths:
         - /home/circleci/.ddev/testcache
 
   lx_arm64_fpm_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     resource_class: arm.medium
     working_directory: ~/ddev
     environment:
       DDEV_TEST_WEBSERVER_TYPE: nginx-fpm
       DDEV_NONINTERACTIVE: "true"
       GOTEST_SHORT: "true"
+      DDEV_TEST_USE_MUTAGEN: ""
+      DDEV_SKIP_NODEJS_TEST: "true"
     steps:
       - checkout
+      - run:
+          name: "Skip if no code changes"
+          command: |
+            set -x
+            if [ "${CIRCLE_PR_NUMBER}" != "" ] ; then
+              echo "base_revision=<< pipeline.git.base_revision >>"
+              if ! git diff --name-only "<< pipeline.git.base_revision >>" | egrep "^(.circleci|.ci-scripts|Makefile|pkg|cmd|vendor|go\.)"; then
+                echo "Skipping build since no code changes found"
+                circleci-agent step halt
+              fi
+            fi
       - run:
           command: ./.ci-scripts/linux_arm64_setup.sh
           name: ARM64 VM setup
           no_output_timeout: "40m"
+      - run: echo "$(docker --version) $(docker-compose --version)"
+      - run: 'mkdir -p ~/.ngrok2 && echo "authtoken: ${NGROK_TOKEN}" >~/.ngrok2/ngrok.yml'
       - run:
           command: make -s test
           name: ddev tests
@@ -108,7 +136,7 @@ jobs:
         at: ~/
     - restore_cache:
         keys:
-        - macos-v23
+        - macos-v26
     # Run the built-in ddev tests with the executables just built.
     - run:
         command: ./.circleci/macos_circle_vm_setup.sh
@@ -119,7 +147,7 @@ jobs:
         name: ddev tests
         no_output_timeout: "40m"
     - save_cache:
-        key: macos-v23
+        key: macos-v26
         paths:
         - /home/circleci/.ddev/testcache
     - store_test_results:
@@ -138,7 +166,7 @@ jobs:
         at: ~/
     - restore_cache:
         keys:
-        - macos-v23
+        - macos-v26
     # Run the built-in ddev tests with the executables just built.
     - run:
         command: ./.circleci/macos_circle_vm_setup.sh
@@ -151,7 +179,7 @@ jobs:
     - store_test_results:
         path: /tmp/testresults
     - save_cache:
-        key: macos-v23
+        key: macos-v26
         paths:
         - /home/circleci/.ddev/testcache
 
@@ -168,7 +196,7 @@ jobs:
         at: ~/
     - restore_cache:
         keys:
-        - macos-v23
+        - macos-v26
     # Run the built-in ddev tests with the executables just built.
     - run:
         command: ./.circleci/macos_circle_vm_setup.sh
@@ -180,24 +208,24 @@ jobs:
     - store_test_results:
         path: /tmp/testresults
     - save_cache:
-        key: macos-v23
+        key: macos-v26
         paths:
         - /home/circleci/.ddev/testcache
 
   lx_apache_fpm_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
       DDEV_TEST_WEBSERVER_TYPE: apache-fpm
-      # Experiment with only testing TYPO3 with the apache run.
+      # Use the TYPO3 project type with the apache run.
       GOTEST_SHORT: 5
       DDEV_NONINTERACTIVE: "true"
     steps:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-v23
+        - linux-homebrew-v33
     - attach_workspace:
         at: ~/
     - run:
@@ -214,14 +242,14 @@ jobs:
     - store_test_results:
         path: /tmp/testresults
     - save_cache:
-        key: linux-v23
+        key: linux-homebrew-v33
         paths:
         - /home/linuxbrew
         - /home/circleci/.ddev/testcache
 
   lx_nfsmount_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
       DDEV_TEST_USE_NFSMOUNT: true
@@ -232,7 +260,7 @@ jobs:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-v23
+        - linux-homebrew-v33
     - attach_workspace:
         at: ~/
     - run:
@@ -243,7 +271,7 @@ jobs:
         # Now build using the regular ddev-only technique - this results in a fully clean set of executables.
     # Run the built-in ddev tests with the executables just built.
     - run:
-        # CircleCI image ubuntu-2004:202101-01 has umask 002, which results in
+        # CircleCI image ubuntu-2204:202101-01 has umask 002, which results in
         # default perms 700 for new directories, which doesn't seem to work with NFS
         command: umask u=rwx,g=rwx,o=rx && make -s test EXTRA_PATH=/home/linuxbrew/.linuxbrew/bin
         name: ddev tests
@@ -251,14 +279,14 @@ jobs:
     - store_test_results:
         path: /tmp/testresults
     - save_cache:
-        key: linux-v23
+        key: linux-homebrew-v33
         paths:
         - /home/linuxbrew
         - /home/circleci/.ddev/testcache
 
   staticrequired:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
     steps:
@@ -266,7 +294,7 @@ jobs:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-v23
+        - linux-homebrew-v33
     - run:
         command: ./.circleci/linux_circle_vm_setup.sh
         name: Circle VM setup
@@ -277,7 +305,7 @@ jobs:
 
   lx_amd64_container_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     environment:
       GOTEST_SHORT: true
@@ -288,7 +316,7 @@ jobs:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-v23
+        - linux-homebrew-v33
     - run:
         command: ./.circleci/linux_circle_vm_setup.sh
         name: Circle VM setup
@@ -312,14 +340,14 @@ jobs:
         name: linux container test
 
     - save_cache:
-        key: linux-v23
+        key: linux-homebrew-v33
         paths:
         - /home/linuxbrew
         - /home/circleci/.ddev/testcache
 
   lx_arm64_container_test:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     resource_class: arm.medium
     working_directory: ~/ddev
     environment:
@@ -373,13 +401,13 @@ jobs:
 
   artifacts:
     machine:
-      image: ubuntu-2004:202101-01
+      image: ubuntu-2204:current
     working_directory: ~/ddev
     steps:
     - run: sudo mkdir /home/linuxbrew && sudo chown $(id -u) /home/linuxbrew
     - restore_cache:
         keys:
-        - linux-v23
+        - linux-homebrew-v33
     - attach_workspace:
         at: ~/
     - run:
@@ -387,7 +415,7 @@ jobs:
         name: tar/zip up artifacts and make hashes
         no_output_timeout: "40m"
     - save_cache:
-        key: linux-v23
+        key: linux-homebrew-v33
         paths:
         - /home/linuxbrew
         - /home/circleci/.ddev/testcache
@@ -399,7 +427,7 @@ jobs:
 
   release_build:
     macos:
-      xcode: "11.3.1"
+      xcode: "12.4.0"
     working_directory: ~/ddev
     environment:
       DDEV_DEBUG: "true"
@@ -410,7 +438,7 @@ jobs:
         name: RELEASE BUILD (macOS) Circle VM setup
     - run: echo "version=$(make version)  CIRCLE_TAG=${CIRCLE_TAG}"
     - run:
-        command: make -s linux_amd64 linux_arm64 windows_amd64 windows_install chocolatey
+        command: make -s linux_amd64 linux_arm64 windows_amd64 windows_arm64 windows_amd64_install windows_arm64_install chocolatey
     - run:
         command: make -s darwin_amd64_notarized darwin_arm64_notarized
         no_output_timeout: 30m
@@ -441,12 +469,12 @@ jobs:
         name: Artifact storage
     - run:
         name: "Bump homebrew edge release"
-        command: ".circleci/bump_homebrew.sh ${HOMEBREW_EDGE_REPOSITORY} ddev ${CIRCLE_TAG} ~/artifacts"
+        command: ".ci-scripts/bump_homebrew.sh ${HOMEBREW_EDGE_REPOSITORY} ddev ${CIRCLE_TAG} ~/artifacts"
     - run:
         name: "Bump homebrew main release if necessary"
         command: |
           if [ ${CIRCLE_TAG%-*} = ${CIRCLE_TAG} ]; then
-            .circleci/bump_homebrew.sh ${HOMEBREW_STABLE_REPOSITORY} ddev ${CIRCLE_TAG} ~/artifacts
+            .ci-scripts/bump_homebrew.sh ${HOMEBREW_STABLE_REPOSITORY} ddev ${CIRCLE_TAG} ~/artifacts
           else
             echo "Skipping homebrew main release because ${CIRCLE_TAG} is an edge/prerelease"
           fi
@@ -454,7 +482,7 @@ jobs:
         name: Push AUR ddev-bin if necessary
         command: |
             if [ ! -z "${AUR_SSH_PRIVATE_KEY}" ] && [ "${CIRCLE_TAG%-*}" = "${CIRCLE_TAG}" ] ; then
-              .circleci/bump_aur.sh ddev-bin ${CIRCLE_TAG} ~/artifacts
+              .ci-scripts/bump_aur.sh ddev-bin ${CIRCLE_TAG} ~/artifacts
             else
               echo "Skipping AUR ddev-bin push"
             fi
@@ -462,7 +490,7 @@ jobs:
         name: Push AUR ddev-edge-bin
         command: |
           if [ ! -z "${AUR_SSH_PRIVATE_KEY}" ] ; then
-            .circleci/bump_aur.sh ddev-edge-bin ${CIRCLE_TAG} ~/artifacts
+            .ci-scripts/bump_aur.sh ddev-edge-bin ${CIRCLE_TAG} ~/artifacts
           else
             echo "Skipping AUR ddev-edge-bin push"
           fi
@@ -486,9 +514,17 @@ workflows:
 #    - mac_container_test
 #    - lx_amd64_container_test
 #    - staticrequired
-    - lx_amd64_fpm_test
-    - lx_arm64_fpm_test
-    - lx_arm64_container_test
+#    - lx_amd64_fpm_test:
+#      branches:
+#        ignore:
+#          - gh-pages
+    - lx_arm64_fpm_test:
+        filters:
+          branches:
+            only: master
+            ignore:
+              - gh-pages
+#    - lx_arm64_container_test
 #        requires:
 #        - build
 #    - mac_nginx_fpm_test:
@@ -513,28 +549,28 @@ workflows:
 #        requires:
 #        - build
 
-  nightly_build:
-    triggers:
-      - schedule:
-          cron: "0 3 * * *"
-          filters:
-            branches:
-              only:
-                - master
-                - "pull/[0-9]+"
-    jobs:
-    - lx_amd64_container_test
-    - lx_arm64_container_test
-    - lx_amd64_fpm_test
-    - lx_arm64_fpm_test
+#  nightly_build:
+#    triggers:
+#      - schedule:
+#          cron: "0 3 * * *"
+#          filters:
+#            branches:
+#              only:
+#                - master
+#                - "pull/[0-9]+"
+#    jobs:
+#    - lx_amd64_container_test
+##    - lx_arm64_container_test
+##    - lx_amd64_fpm_test
+#    - lx_arm64_fpm_test
 
-  release_build:
-    jobs:
-      - release_build:
-          context: ddev-local
-          filters:
-            tags:
-              only:
-                - "/.*/"
-            branches:
-              ignore: /.*/
+#  release_build:
+#    jobs:
+#      - release_build:
+#          context: ddev-local
+#          filters:
+#            tags:
+#              only:
+#                - "/.*/"
+#            branches:
+#              ignore: /.*/

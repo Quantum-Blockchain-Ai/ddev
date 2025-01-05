@@ -2,16 +2,16 @@ package fileutil_test
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/require"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var testFileLocation = "testdata/regular_file"
@@ -101,7 +101,7 @@ func TestPurgeDirectory(t *testing.T) {
 	err = fileutil.CopyFile(testFileLocation, tmpPurgeSubFile)
 	assert.NoError(err)
 
-	err = os.Chmod(tmpPurgeSubFile, 0444)
+	err = util.Chmod(tmpPurgeSubFile, 0444)
 	assert.NoError(err)
 
 	err = fileutil.PurgeDirectory(tmpPurgeDir)
@@ -134,13 +134,21 @@ func TestListFilesInDir(t *testing.T) {
 	assert.Contains(fileList[1], "two.txt")
 }
 
+// TestListFilesInDirNoSubdirsFullPath tests ListFilesInDirNoSubdirsFullPath()
+func TestListFilesInDirNoSubdirsFullPath(t *testing.T) {
+	fileList, err := fileutil.ListFilesInDirFullPath(filepath.Join("testdata", t.Name()), true)
+	require.NoError(t, err)
+	require.Len(t, fileList, 2)
+	require.Contains(t, fileList[0], "one.txt")
+	require.Contains(t, fileList[1], "two.txt")
+}
+
 // TestReplaceStringInFile tests the ReplaceStringInFile utility function.
 func TestReplaceStringInFile(t *testing.T) {
 	assert := asrt.New(t)
-	tmp, err := ioutil.TempDir("", "")
-	assert.NoError(err)
-	newFilePath := filepath.Join(tmp, "newfile.txt")
-	err = fileutil.ReplaceStringInFile("some needle we're looking for", "specialJUNKPattern", "testdata/fgrep_has_positive_contents.txt", newFilePath)
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	newFilePath := filepath.Join(tmpDir, "newfile.txt")
+	err := fileutil.ReplaceStringInFile("some needle we're looking for", "specialJUNKPattern", "testdata/fgrep_has_positive_contents.txt", newFilePath)
 	assert.NoError(err)
 	found, err := fileutil.FgrepStringInFile(newFilePath, "specialJUNKPattern")
 	assert.NoError(err)
@@ -191,7 +199,7 @@ func TestReplaceSimulatedXsymSymlinks(t *testing.T) {
 		assert.NoError(err)
 		if err == nil && fi != nil && !fi.IsDir() {
 			// Read the symlink as a file. It should resolve with the actual content of target
-			contents, err := ioutil.ReadFile(link.LinkLocation)
+			contents, err := os.ReadFile(link.LinkLocation)
 			assert.NoError(err)
 			expectedContent := "textfile " + filepath.Base(link.LinkTarget) + "\n"
 			assert.Equal(expectedContent, string(contents))

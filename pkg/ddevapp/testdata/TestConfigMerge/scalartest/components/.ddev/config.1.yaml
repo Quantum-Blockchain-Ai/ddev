@@ -1,0 +1,7 @@
+php_version: 8.1
+performance_mode: "mutagen"
+webserver_type: nginx-fpm
+
+database:
+  type: mariadb
+  version: 10.5

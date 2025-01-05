@@ -1,55 +1,58 @@
 package cmd
 
 import (
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"runtime"
+	"os"
 	"testing"
 )
 
 // TestCmdSnapshotRestore runs `ddev snapshot restore` on the test apps
 func TestCmdSnapshotRestore(t *testing.T) {
 	assert := asrt.New(t)
+	// Gather reporting about goroutines at exit
+	_ = os.Setenv("DDEV_GOROUTINES", "true")
 
+	origDir, _ := os.Getwd()
 	site := TestSites[0]
-	cleanup := site.Chdir()
-
-	app, err := ddevapp.NewApp(site.Dir, false)
+	err := os.Chdir(site.Dir)
 	assert.NoError(err)
+	app, err := ddevapp.NewApp(site.Dir, false)
+	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		// Make sure all databases are back to default empty
-		_ = app.Stop(true, false)
-		cleanup()
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(app.GetConfigPath("db_snapshots"))
 	})
 
-	err = app.Start()
+	err = app.Restart()
 	require.NoError(t, err)
 
 	// Ensure that a snapshot is created
 	args := []string{"snapshot", "--name", "test-snapshot"}
 	out, err := exec.RunCommand(DdevBin, args)
 	assert.NoError(err)
-	assert.Contains(out, "Created snapshot test-snapshot")
-
-	// Ensure that a snapshot can be restored
-	args = []string{"snapshot", "restore", "test-snapshot"}
-	out, err = exec.RunCommand(DdevBin, args)
-	assert.NoError(err)
-	assert.Contains(out, "Restored database snapshot")
+	assert.Contains(out, "Created database snapshot test-snapshot")
+	testcommon.CheckGoroutineOutput(t, out)
 
 	// Try interactive command
-	if runtime.GOOS != "windows" {
-		out, err = exec.RunCommand("bash", []string{"-c", "echo -nq '\n' | " + DdevBin + " snapshot restore"})
-		assert.NoError(err)
-		assert.Contains(out, "Restored database snapshot")
-	}
+	// Doesn't seem to work without pty, 2021-12-14
+	//if runtime.GOOS != "windows" {
+	//	out, err = exec.RunCommand("bash", []string{"-c", "echo -nq '\n' | " + DdevBin + " snapshot restore"})
+	//	assert.NoError(err)
+	//	assert.Contains(out, "Restored database snapshot")
+	//}
 
 	// Ensure that latest snapshot can be restored
-	args = []string{"snapshot", "restore", "--latest"}
-	out, err = exec.RunCommand(DdevBin, args)
+	out, err = exec.RunHostCommand(DdevBin, "snapshot", "restore", "--latest")
 	assert.NoError(err)
-	assert.Contains(out, "Restored database snapshot")
+	assert.Contains(out, "Database snapshot test-snapshot was restored")
+	testcommon.CheckGoroutineOutput(t, out)
 }

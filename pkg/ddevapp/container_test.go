@@ -2,13 +2,13 @@ package ddevapp_test
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/util"
-	asrt "github.com/stretchr/testify/assert"
 	"os"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/util"
+	asrt "github.com/stretchr/testify/assert"
 )
 
 // Test to make sure that the user provisioned in the container has
@@ -26,8 +26,7 @@ func TestUserProvisioningInContainer(t *testing.T) {
 	switchDir := site.Chdir()
 	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s %s", site.Name, t.Name()))
-	defer runTime()
+	defer util.TimeTrackC(fmt.Sprintf("%s %s", site.Name, t.Name()))()
 
 	err := app.Init(site.Dir)
 	assert.NoError(err)
@@ -48,21 +47,21 @@ func TestUserProvisioningInContainer(t *testing.T) {
 			Cmd:     "id -un",
 		})
 		assert.NoError(err)
-		assert.Equal(username, strings.Trim(out, "\n"))
+		assert.Equal(username, strings.Trim(out, "\r\n"))
 
 		out, _, err = app.Exec(&ddevapp.ExecOpts{
 			Service: service,
 			Cmd:     "id -u",
 		})
 		assert.NoError(err)
-		assert.Equal(uid, strings.Trim(out, "\n"))
+		assert.Equal(uid, strings.Trim(out, "\r\n"))
 
 		out, _, err = app.Exec(&ddevapp.ExecOpts{
 			Service: service,
 			Cmd:     "id -g",
 		})
 		assert.NoError(err)
-		assert.Equal(gid, strings.Trim(out, "\n"))
+		assert.Equal(gid, strings.Trim(out, "\r\n"))
 	}
 
 }

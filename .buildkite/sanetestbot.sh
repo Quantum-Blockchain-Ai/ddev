@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Check a testbot or test environment to make sure it's likely to be sane.
 # We should add to this script whenever a testbot fails and we can figure out why.
@@ -28,14 +28,14 @@ while ! docker ps >/dev/null 2>&1 ; do
     sleep 60
 done
 
-# Test that docker can allocate 80 and 443, get get busybox
-docker pull busybox:latest >/dev/null
+# Test that docker can allocate 80 and 443, get busybox
+docker pull busybox:stable >/dev/null
 # Try the docker run command twice because of the really annoying mkdir /c: file exists bug
 # Apparently https://github.com/docker/for-win/issues/1560
-(sleep 1 && (docker run --rm -t -p 80:80 -p 443:443 -p 1081:1081 -p 1082:1082 -v /$HOME:/tmp/junker99 busybox:latest ls //tmp/junker99 >/dev/null) || (sleep 1 && docker run --rm -t -p 80:80 -p 443:443 -p 1081:1081 -p 1082:1082 -v /$HOME:/tmp/junker99 busybox:latest ls //tmp/junker99 >/dev/null ))
+(sleep 1 && (docker run --rm -t -p 80:80 -p 443:443 -p 1081:1081 -p 1082:1082 -v /$HOME:/tmp/junker99 busybox:stable ls //tmp/junker99 >/dev/null) || (sleep 1 && docker run --rm -t -p 80:80 -p 443:443 -p 1081:1081 -p 1082:1082 -v /$HOME:/tmp/junker99 busybox:stable ls //tmp/junker99 >/dev/null ))
 
 # Check that required commands are available.
-for command in mysql git go make; do
+for command in git go make mysql ngrok; do
     command -v $command >/dev/null || ( echo "Did not find command installed '$command'" && exit 2 )
 done
 
@@ -49,15 +49,6 @@ CURRENT_DDEV_VERSION=$(ddev --version | awk '{ print $3 }')
 if command -v ddev >/dev/null && version_gt ${MIN_DDEV_VERSION} ${CURRENT_DDEV_VERSION} ; then
   echo "ddev version in $(command -v ddev) is inadequate: $(ddev --version)"
   exit 4
-fi
-
-if ! command -v ngrok >/dev/null ; then
-    echo "ngrok is not installed" && exit 5
-fi
-
-# Skip nfs check on linux, as we won't run nfs there
-if [ ${OSTYPE%%-gnu} != "linux" ]; then
-  $(dirname $0)/nfstest.sh
 fi
 
 echo "-- testbot $HOSTNAME seems to be set up OK --"

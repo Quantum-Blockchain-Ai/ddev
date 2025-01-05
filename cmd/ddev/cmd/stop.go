@@ -1,8 +1,11 @@
 package cmd
 
 import (
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/util"
+	"os"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
@@ -12,10 +15,10 @@ var removeData bool
 // Stop all projects (but not available with -a
 var stopAll bool
 
-// create a snapshot during remove (default to false with regular remove, default to true with rm --remove-data
+// Create a snapshot during remove (default to false with regular remove, default to true with rm --remove-data
 var createSnapshot bool
 
-// force omission of snapshot during remove-data
+// Force omission of snapshot during remove-data
 var omitSnapshot bool
 
 // Stop the ddev-ssh-agent
@@ -25,9 +28,10 @@ var unlist bool
 
 // DdevStopCmd represents the remove command
 var DdevStopCmd = &cobra.Command{
-	Use:     "stop [projectname ...]",
-	Aliases: []string{"rm", "remove"},
-	Short:   "Stop and remove the containers of a project. Does not lose or harm anything unless you add --remove-data.",
+	ValidArgsFunction: ddevapp.GetProjectNamesFunc("active", 0),
+	Use:               "stop [projectname ...]",
+	Aliases:           []string{"rm", "remove"},
+	Short:             "Stop and remove the containers of a project. Does not lose or harm anything unless you add --remove-data.",
 	Long: `Stop and remove the containers of a project. You can run 'ddev stop'
 from a project directory to stop/remove that project, or you can stop/remove projects in
 any directory by running 'ddev stop projectname [projectname ...]' or 'ddev stop -a'.
@@ -35,7 +39,7 @@ any directory by running 'ddev stop projectname [projectname ...]' or 'ddev stop
 By default, stop is a non-destructive operation and will leave database
 contents intact. It never touches your code or files directories.
 
-To remove database contents and global listing, 
+To remove database contents and global listing,
 use "ddev delete" or "ddev stop --remove-data".
 
 To snapshot the database on stop, use "ddev stop --snapshot"; A snapshot is automatically created on
@@ -51,7 +55,45 @@ ddev stop --remove-data`,
 			util.Failed("Illegal option combination: --snapshot and --omit-snapshot:")
 		}
 
+		selectFlag, err := cmd.Flags().GetBool("select")
+
+		if err != nil {
+			util.Failed(err.Error())
+		}
+
+		if selectFlag {
+			activeProjects := ddevapp.GetActiveProjects()
+
+			if len(activeProjects) == 0 {
+				util.Warning("No project is currently running")
+				os.Exit(0)
+			}
+
+			activeProjectNames := ddevapp.ExtractProjectNames(activeProjects)
+
+			prompt := promptui.Select{
+				Label: "Running projects",
+				Items: activeProjectNames,
+				Templates: &promptui.SelectTemplates{
+					Label: "{{ . | cyan }}:",
+				},
+			}
+
+			_, projectName, err := prompt.Run()
+
+			if err != nil {
+				util.Failed(err.Error())
+			}
+
+			args = append(args, projectName)
+		}
+
+		// Skip project validation if --unlist is provided
+		originalRunValidateConfig := ddevapp.RunValidateConfig
+		ddevapp.RunValidateConfig = !unlist
 		projects, err := getRequestedProjects(args, stopAll)
+		ddevapp.RunValidateConfig = originalRunValidateConfig
+
 		if err != nil {
 			util.Failed("Failed to get project(s): %v", err)
 		}
@@ -61,7 +103,8 @@ ddev stop --remove-data`,
 
 		// Iterate through the list of projects built above, removing each one.
 		for _, project := range projects {
-			if project.SiteStatus() == ddevapp.SiteStopped {
+			status, _ := project.SiteStatus()
+			if status == ddevapp.SiteStopped {
 				util.Success("Project %s is already stopped.", project.GetName())
 			}
 
@@ -72,6 +115,10 @@ ddev stop --remove-data`,
 			}
 			if unlist {
 				project.RemoveGlobalProjectInfo()
+				err = ddevapp.TerminateMutagenSync(project)
+				if err != nil {
+					util.Warning("Unable to terminate Mutagen sync for project %s", project.Name)
+				}
 			}
 
 			util.Success("Project %s has been stopped.", project.GetName())
@@ -89,6 +136,15 @@ func init() {
 	DdevStopCmd.Flags().BoolVarP(&removeData, "remove-data", "R", false, "Remove stored project data (MySQL, logs, etc.)")
 	DdevStopCmd.Flags().BoolVarP(&createSnapshot, "snapshot", "S", false, "Create database snapshot")
 	DdevStopCmd.Flags().BoolVarP(&omitSnapshot, "omit-snapshot", "O", false, "Omit/skip database snapshot")
+	DdevStopCmd.Flags().BoolP("select", "s", false, "Interactively select a project to stop")
+	err := StartCmd.Flags().MarkHidden("select")
+	if err != nil {
+		util.Warning("Unexpected error marking flag as hidden: %v", err)
+	}
+	err = StartCmd.Flags().MarkDeprecated("select", "Use tabbed autocompletion instead.")
+	if err != nil {
+		util.Warning("Unexpected error marking flag as deprecated: %v", err)
+	}
 
 	DdevStopCmd.Flags().BoolVarP(&stopAll, "all", "a", false, "Stop and remove all running or container-stopped projects and remove from global projects list")
 	DdevStopCmd.Flags().BoolVarP(&stopSSHAgent, "stop-ssh-agent", "", false, "Stop the ddev-ssh-agent container")

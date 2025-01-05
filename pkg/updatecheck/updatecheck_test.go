@@ -2,6 +2,7 @@ package updatecheck
 
 import (
 	"fmt"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	"path/filepath"
 	"testing"
 
@@ -9,12 +10,11 @@ import (
 
 	"os"
 
-	"github.com/drud/ddev/pkg/testcommon"
-	"github.com/drud/ddev/pkg/version"
+	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
 )
 
-const testOrg = "drud"
+const testOrg = "ddev"
 const testRepo = "ddev"
 
 // TestGetContainerHealth tests the function for processing container readiness.
@@ -53,6 +53,9 @@ func TestIsReleaseVersion(t *testing.T) {
 		{"0.1.0", true},
 		{"v0.1.0", true},
 		{"v19.99.99", true},
+		{"v1.17.0-alpha1", true},
+		{"v1.18.0-alpha4-43-gb5ff9108-dirty", false},
+		{"v1.18.0-alpha4-43-gb5ff9108", false},
 		{"19.99.99-8us8dfgh7-dirty", false},
 		{"v0.3-7-g3ca5586-dirty", false},
 	}
@@ -75,12 +78,12 @@ func TestAvailableUpdates(t *testing.T) {
 	}{
 		{"0.0.0", true},
 		{"v0.1.1", true},
-		{version.DdevVersion, false},
+		{versionconstants.DdevVersion, false},
 		{"v999999.999999.999999", false},
 	}
 
 	for _, tt := range versionTests {
-		updateNeeded, updateURL, err := AvailableUpdates(testOrg, testRepo, tt.in)
+		updateNeeded, _, updateURL, err := AvailableUpdates(testOrg, testRepo, tt.in)
 		if err != nil {
 			t.Skipf("AvailableUpdates() failed, err=%v", err)
 		}

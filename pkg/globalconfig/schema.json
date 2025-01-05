@@ -1,0 +1,161 @@
+{
+  "$id": "https://json.schemastore.org/base.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DDEV global config",
+  "description": "Schema for DDEV global_config.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "developer_mode": {
+      "description": "Not currently used.",
+      "type": "boolean"
+    },
+    "fail_on_hook_fail": {
+      "description": "Whether ddev start should be interrupted by a failing hook, on a single project or for all projects if used globally.",
+      "type": "boolean"
+    },
+    "instrumentation_opt_in": {
+      "description": "Whether to allow instrumentation reporting.",
+      "type": "boolean"
+    },
+    "instrumentation_queue_size": {
+      "description": "Maximum number of locally collected events for instrumentation reporting.",
+      "type": "integer"
+    },
+    "instrumentation_reporting_interval": {
+      "description": "Reporting interval in hours for instrumentation reporting.",
+      "type": "integer"
+    },
+    "instrumentation_user": {
+      "description": "Specific name identifier for instrumentation reporting.",
+      "type": "string"
+    },
+    "internet_detection_timeout_ms": {
+      "description": "Internet detection timeout in milliseconds.",
+      "type": "integer"
+    },
+    "last_started_version": {
+      "description": "Last started version using \"ddev --version\" command.",
+      "type": "string"
+    },
+    "letsencrypt_email": {
+      "description": "Email associated with Let's Encrypt feature. (Works in conjunction with use_letsencrypt.) (Not currently compatible with Traefik router.)",
+      "type": "string"
+    },
+    "mailpit_http_port": {
+      "description": "Port for project's Mailpit HTTP URL.",
+      "type": "string"
+    },
+    "mailpit_https_port": {
+      "description": "Port for project's Mailpit HTTPS URL.",
+      "type": "string"
+    },
+    "messages": {
+      "description": "Configure messages like the Tip of the Day.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ticker_interval": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ticker_interval"
+      ]
+    },
+    "mkcert_caroot": {
+      "description": "The absolute path to the directory containing mkcert certificates using \"mkcert -CAROOT\" command.",
+      "type": "string"
+    },
+    "no_bind_mounts": {
+      "description": "Whether to not use Docker bind mounts.",
+      "type": "boolean"
+    },
+    "omit_containers": {
+      "description": "A list of container types that should not be started when the project is started.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ddev-router",
+          "ddev-ssh-agent"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "performance_mode": {
+      "description": "Defines the performance optimization mode to be used. Currently Mutagen asynchronous caching and NFS are supported. Mutagen is enabled by default on Mac and Windows.",
+      "type": "string",
+      "enum": [
+        "global",
+        "none",
+        "mutagen",
+        "nfs"
+      ]
+    },
+    "project_tld": {
+      "description": "Set the top-level domain to be used for projects, defaults to ddev.site (default \"ddev.site\").",
+      "type": "string"
+    },
+    "required_docker_compose_version": {
+      "description": "Specific docker-compose version for download.",
+      "type": "string"
+    },
+    "router_bind_all_interfaces": {
+      "description": "Whether to bind ddev-router's ports on all network interfaces.",
+      "type": "boolean"
+    },
+    "router_http_port": {
+      "description": "The router HTTP port for this project.",
+      "type": "string"
+    },
+    "router_https_port": {
+      "description": "The router HTTPS port for this project.",
+      "type": "string"
+    },
+    "simple_formatting": {
+      "description": "Whether to disable most ddev list and ddev describe table formatting.",
+      "type": "boolean"
+    },
+    "table_style": {
+      "description": "Style for ddev list and ddev describe.",
+      "type": "string",
+      "enum": [
+        "default",
+        "bold",
+        "bright"
+      ]
+    },
+    "traefik_monitor_port": {
+      "description": "Specify an alternate port for the Traefik (ddev-router) monitor port. This defaults to 10999 and rarely needs to be changed, but can be changed in cases of port conflicts.",
+      "type": "string"
+    },
+    "use_docker_compose_from_path": {
+      "description": "Whether to use the system-installed docker-compose. You can otherwise use required_docker_compose_version to specify a version for download.",
+      "type": "boolean"
+    },
+    "use_hardened_images": {
+      "description": "Whether to use hardened images for internet deployment.",
+      "type": "boolean"
+    },
+    "use_letsencrypt": {
+      "description": "Whether to enable Let's Encrypt integration. (Works in conjunction with letsencrypt_email.) (Not currently compatible with Traefik router.)",
+      "type": "boolean"
+    },
+    "web_environment": {
+      "description": "Add environment variables to the web container.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "wsl2_no_windows_hosts_mgt": {
+      "description": "(WSL2 only) Whether to disable the management and checking of the Windows hosts file. By default, when using WSL2, DDEV manages the system-wide hosts file on the Windows side (normally C:\\Windows\\system32\\drivers\\etc\\hosts) by using ddev.exe installed on the Windows side. This normally works better for all applications, including browsers and IDEs. However, this behavior can be disabled by setting wsl_no_windows_hosts_mgt: true.",
+      "type": "boolean"
+    },
+    "xdebug_ide_location": {
+      "description": "Adjust Xdebug listen location for WSL2 or in-container.",
+      "type": "string"
+    }
+  }
+}

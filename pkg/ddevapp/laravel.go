@@ -1,13 +1,19 @@
 package ddevapp
 
 import (
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/util"
+	"fmt"
+	"os"
 	"path/filepath"
+
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/util"
 )
 
 const (
-	WarnTypeAbsent        = iota
+	// WarnTypeAbsent warns if type is absent
+	WarnTypeAbsent = iota
+	// WarnTypeNotConfigured warns if type not configured
 	WarnTypeNotConfigured = iota
 )
 
@@ -16,29 +22,58 @@ func isLaravelApp(app *DdevApp) bool {
 	return fileutil.FileExists(filepath.Join(app.AppRoot, "artisan"))
 }
 
-func envSettingsWarning(status int) {
-	var srcFile = ".env"
-	var message = "Don't forget to configure the database in your .env file"
-
-	if WarnTypeAbsent == status {
-		srcFile += ".example"
-		message = "Don't forget to create the .env file with proper database settings"
-	}
-	util.Warning(message)
-	util.Warning("You can do it with this one-liner:")
-	util.Warning("ddev exec \"cat %v | sed  -E 's/DB_(HOST|DATABASE|USERNAME|PASSWORD)=(.*)/DB_\\1=db/g' > .env\"", srcFile)
-	util.Warning("Read more on https://ddev.readthedocs.io/en/stable/users/cli-usage/#laravel-quickstart")
-}
-
 func laravelPostStartAction(app *DdevApp) error {
-	if fileutil.FileExists(filepath.Join(app.AppRoot, ".env")) {
-		isConfiguredDbHost, err := fileutil.FgrepStringInFile(app.SiteSettingsPath, `DB_HOST=db`)
-		isConfiguredDbConnection, _ := fileutil.FgrepStringInFile(app.SiteSettingsPath, `DB_CONNECTION=ddev`)
-		if err == nil && !isConfiguredDbHost && !isConfiguredDbConnection {
-			envSettingsWarning(WarnTypeNotConfigured)
+	// We won't touch env if disable_settings_management: true
+	if app.DisableSettingsManagement {
+		return nil
+	}
+	envFilePath := filepath.Join(app.AppRoot, ".env")
+	_, envText, err := ReadProjectEnvFile(envFilePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("unable to read .env file: %v", err)
+	}
+	if os.IsNotExist(err) {
+		err = fileutil.CopyFile(filepath.Join(app.AppRoot, ".env.example"), filepath.Join(app.AppRoot, ".env"))
+		if err != nil {
+			util.Debug("Laravel: .env.example does not exist yet, not trying to process it")
+			return nil
 		}
-	} else {
-		envSettingsWarning(WarnTypeAbsent)
+		_, envText, err = ReadProjectEnvFile(envFilePath)
+		if err != nil {
+			return err
+		}
+	}
+	port := "3306"
+	dbConnection := "mariadb"
+	if app.Database.Type == nodeps.MariaDB {
+		hasMariaDbDriver, _ := fileutil.FgrepStringInFile(filepath.Join(app.AppRoot, "config/database.php"), "mariadb")
+		if !hasMariaDbDriver {
+			// Older versions of Laravel (before 11) use "mysql" driver for MariaDB
+			// This change is required to prevent this error on "php artisan migrate":
+			// InvalidArgumentException Database connection [mariadb] not configured
+			dbConnection = "mysql"
+		}
+	} else if app.Database.Type == nodeps.MySQL {
+		dbConnection = "mysql"
+	} else if app.Database.Type == nodeps.Postgres {
+		dbConnection = "pgsql"
+		port = "5432"
+	}
+	envMap := map[string]string{
+		"APP_URL":       app.GetPrimaryURL(),
+		"DB_HOST":       "db",
+		"DB_PORT":       port,
+		"DB_DATABASE":   "db",
+		"DB_USERNAME":   "db",
+		"DB_PASSWORD":   "db",
+		"DB_CONNECTION": dbConnection,
+		"MAIL_MAILER":   "smtp",
+		"MAIL_HOST":     "127.0.0.1",
+		"MAIL_PORT":     "1025",
+	}
+	err = WriteProjectEnvFile(envFilePath, envMap, envText)
+	if err != nil {
+		return err
 	}
 
 	return nil

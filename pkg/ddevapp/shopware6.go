@@ -1,31 +1,34 @@
 package ddevapp
 
 import (
+	"errors"
 	"fmt"
-	"github.com/drud/ddev/pkg/archive"
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/util"
 	"os"
 	"path/filepath"
+
+	"github.com/ddev/ddev/pkg/archive"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/util"
+	copy2 "github.com/otiai10/copy"
 )
 
 // isShopware6App returns true if the app is of type shopware6
 func isShopware6App(app *DdevApp) bool {
-	isShopware6, err := fileutil.FgrepStringInFile(filepath.Join(app.AppRoot, "config", "README.md"), "packages/shopware.yaml")
+	isShopware6, err := fileutil.FgrepStringInFile(filepath.Join(app.AppRoot, "composer.json"), `"name": "shopware/production"`)
 	if err == nil && isShopware6 {
 		return true
 	}
 	return false
 }
 
-// setShopware6SiteSettingsPaths sets the paths to settings.php for templating.
+// setShopware6SiteSettingsPaths sets the paths to .env.local file.
 func setShopware6SiteSettingsPaths(app *DdevApp) {
-	app.SiteSettingsPath = filepath.Join(app.AppRoot, ".env")
+	app.SiteSettingsPath = filepath.Join(app.AppRoot, ".env.local")
 }
 
 // shopware6ImportFilesAction defines the shopware6 workflow for importing user-generated files.
-func shopware6ImportFilesAction(app *DdevApp, importPath, extPath string) error {
-	destPath := filepath.Join(app.GetAppRoot(), app.GetDocroot(), app.GetUploadDir())
+func shopware6ImportFilesAction(app *DdevApp, uploadDir, importPath, extPath string) error {
+	destPath := app.calculateHostUploadDirFullPath(uploadDir)
 
 	// parent of destination dir should exist
 	if !fileutil.FileExists(filepath.Dir(destPath)) {
@@ -33,13 +36,13 @@ func shopware6ImportFilesAction(app *DdevApp, importPath, extPath string) error 
 	}
 
 	// parent of destination dir should be writable.
-	if err := os.Chmod(filepath.Dir(destPath), 0755); err != nil {
+	if err := util.Chmod(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
 
-	// If the destination path exists, remove it as was warned
+	// If the destination path exists, purge it as was warned
 	if fileutil.FileExists(destPath) {
-		if err := os.RemoveAll(destPath); err != nil {
+		if err := fileutil.PurgeDirectory(destPath); err != nil {
 			return fmt.Errorf("failed to cleanup %s before import: %v", destPath, err)
 		}
 	}
@@ -60,55 +63,43 @@ func shopware6ImportFilesAction(app *DdevApp, importPath, extPath string) error 
 		return nil
 	}
 
-	if err := fileutil.CopyDir(importPath, destPath); err != nil {
+	if err := copy2.Copy(importPath, destPath); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// getShopwareUploadDir will return a custom upload dir if defined,
-//returning a default path if not; this is relative to the docroot
-func getShopwareUploadDir(app *DdevApp) string {
-	if app.UploadDir == "" {
-		return "media"
-	}
-
-	return app.UploadDir
+// getShopwareUploadDirs will return the default paths.
+func getShopwareUploadDirs(_ *DdevApp) []string {
+	return []string{"media"}
 }
 
-// shopware6PostStartAction checks to see if the .env file is set up
+// shopware6PostStartAction checks to see if the .env.local file is set up
 func shopware6PostStartAction(app *DdevApp) error {
-	envFile := filepath.Join(app.AppRoot, ".env")
-	var addOnConfig string
-	expectedDatabaseURL := `DATABASE_URL="mysql://db:db@db:3306/db"`
-	expectedPrimaryURL := fmt.Sprintf(`APP_URL="%s"`, app.GetPrimaryURL())
-	expectedMailerURL := `MAILER_URL="smtp://localhost:1025?encryption=&auth_mode="`
-
-	if fileutil.FileExists(envFile) {
-		isConfiguredDbConnection, _ := fileutil.FgrepStringInFile(app.SiteSettingsPath, expectedDatabaseURL)
-		isAppURLCorrect, _ := fileutil.FgrepStringInFile(app.SiteSettingsPath, expectedPrimaryURL)
-		isMailhogConfigCorrect, _ := fileutil.FgrepStringInFile(envFile, expectedMailerURL)
-
-		if !isConfiguredDbConnection {
-			addOnConfig = addOnConfig + expectedDatabaseURL + "\n"
+	if app.DisableSettingsManagement {
+		return nil
+	}
+	envFilePath := filepath.Join(app.AppRoot, ".env.local")
+	_, envText, err := ReadProjectEnvFile(envFilePath)
+	var envMap = map[string]string{
+		"DATABASE_URL": `mysql://db:db@db:3306/db`,
+		"APP_ENV":      "dev",
+		"APP_URL":      app.GetPrimaryURL(),
+		"MAILER_DSN":   `smtp://127.0.0.1:1025?encryption=&auth_mode=`,
+	}
+	// If the .env.local doesn't exist, create it.
+	switch {
+	case err == nil:
+		util.Warning("Updating %s with %v", envFilePath, envMap)
+		fallthrough
+	case errors.Is(err, os.ErrNotExist):
+		err := WriteProjectEnvFile(envFilePath, envMap, envText)
+		if err != nil {
+			return err
 		}
-		if !isAppURLCorrect {
-			addOnConfig = addOnConfig + expectedPrimaryURL + "\n"
-		}
-		if !isMailhogConfigCorrect {
-			addOnConfig = addOnConfig + expectedMailerURL + "\n"
-		}
-		if addOnConfig != "" {
-			addOnConfig = "# =================\n# Configuration added by ddev\n" + addOnConfig
-			err := fileutil.AppendStringToFile(envFile, addOnConfig)
-			if err != nil {
-				return err
-			}
-			util.Warning("ddev configuration added to %s", envFile)
-		}
-	} else {
-		util.Warning("the .env file has not yet been created (%s)", envFile)
+	default:
+		util.Warning("error opening %s: %v", envFilePath, err)
 	}
 
 	return nil

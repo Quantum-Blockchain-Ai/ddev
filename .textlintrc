@@ -1,0 +1,50 @@
+{
+  "filters": {
+    "comments": true
+  },
+  "rules": {
+    "no-todo": true,
+    "terminology": {
+      "defaultTerms": true,
+      "skip": [
+        "Code",
+        "Image",
+       ],
+      "terms": [
+        "AMD64",
+        "ARM64",
+        "Bash",
+        "Colima",
+        "Docker",
+        "Drush",
+        "Git",
+        "GitHub",
+        "Mutagen",
+        "MySQL",
+        "phpMyAdmin",
+        "Traefik",
+        ["V[ -]?S[ -]?Code", "VS Code"],
+        "Xdebug",
+        ["(\\s)ddev", "DDEV"],
+        ["(\\s)http", "HTTP"],
+        ["(\\s)https", "HTTPS"],
+        ["(\\s)SSH", "SSH"],
+        ["web-?server", "web server"]
+      ],
+      "exclude": [
+        'V[ -]?S[ -]?Code',
+        "back[- ]end(\\w*)",
+        "command ?line",
+        "front[- ]end(\\w*)",
+        "web[- ]?site(s)?"
+      ]
+    },
+    "stop-words": {
+      "defaultWords": false,
+      "words": [
+        ["just"],
+        ["simply"]
+      ],
+    }
+  }
+}

@@ -1,36 +1,76 @@
 name: Check docs
+defaults:
+  run:
+    shell: bash
+
 on:
   push:
     branches:
-    - master
+      - master
   pull_request:
     paths:
-    - "docs/**"
-    - "index.md"
-    - ".spellcheckwordlist.txt"
-    - ".spellcheck.yml"
-    - ".markdownlintrc"
-    - "mkdocs.yml"
-    - ".readthedocs.yml"
-    - "requirements.txt"
+      - "docs/**"
+      - ".spellcheckwordlist.txt"
+      - ".spellcheck.yml"
+      - ".markdownlint.jsonc"
+      - "mkdocs.yml"
+      - ".readthedocs.yaml"
+      - ".github/workflows/**"
+      - "markdown-link-check.json"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  actions: write
 
 jobs:
   build:
-    name: Docs check (spellcheck, markdownlint)
-    runs-on: ubuntu-latest
+    name: Docs check (spellcheck, links, markdownlint, textlint)
+    # linkspector seems to fail with "No usable sandbox"
+    runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@master
-    - uses: rojopolis/spellcheck-github-actions@0.8.0
-      name: Spellcheck
-    - name: Run markdownlint on docs
-      uses: docker://avtodev/markdown-lint:v1
-      with:
-        config: '.markdownlintrc'
-        args: '*.md docs/*.md docs/users'
-#    - name: Debugging with tmate
-#      uses: mxschmitt/action-tmate@v3.1
-    - name: Test mkdocs
-      run: |
-        sudo pip3 install setuptools
-        sudo pip3 install -r requirements.txt
-        mkdocs -q build -d /tmp/mkdocsbuild
+      - uses: actions/checkout@v4
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+      - name: Spellcheck
+        uses: rojopolis/spellcheck-github-actions@v0
+      - name: Install textlint
+        run: |
+          npm init -y
+          npm install textlint textlint-filter-rule-comments textlint-rule-no-todo textlint-rule-stop-words textlint-rule-terminology
+      - name: Run textlint
+        uses: tsuyoshicho/action-textlint@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-check
+          textlint_flags: "{README.md,version-history.md,docs/**}"
+      - name: Run linkspector to check links
+        uses: umbrelladocs/action-linkspector@v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          fail_on_error: true
+          config_file: '.linkspector.yml'
+      - name: Run markdownlint
+        uses: docker://avtodev/markdown-lint:v1
+        with:
+          config: '.markdownlint.jsonc'
+          args: '*.md docs/content'
+      #    - name: Debugging with tmate
+      #      uses: mxschmitt/action-tmate@v3.1
+      - name: Test mkdocs
+        env:
+          MKDOCS_GITHUB_USER: ${{ secrets.MKDOCS_GITHUB_USER }}
+          MKDOCS_GITHUB_TOKEN: ${{ secrets.MKDOCS_GITHUB_TOKEN }}
+        if: env.MKDOCS_GITHUB_TOKEN != ''
+        run: |
+          sudo pip3 install setuptools
+          sudo pip3 install -r docs/mkdocs-pip-requirements
+          mkdocs -q build -d /tmp/mkdocsbuild

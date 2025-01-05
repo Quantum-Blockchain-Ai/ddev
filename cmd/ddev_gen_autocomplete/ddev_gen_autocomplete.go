@@ -1,21 +1,20 @@
 package main
 
 import (
+	"github.com/ddev/ddev/cmd/ddev/cmd"
+	"github.com/ddev/ddev/pkg/util"
 	"os"
 	"path/filepath"
-
-	"github.com/drud/ddev/cmd/ddev/cmd"
-	"github.com/drud/ddev/pkg/util"
 )
 
-var targetDir = ".gotmp/bin"
+var targetDir = ".gotmp/bin/completions"
 
 func main() {
 	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
 		err = os.MkdirAll(targetDir, 0755)
 		util.CheckErr(err)
 	}
-	err := cmd.RootCmd.GenBashCompletionFile(filepath.Join(targetDir, "ddev_bash_completion.sh"))
+	err := cmd.RootCmd.GenBashCompletionFileV2(filepath.Join(targetDir, "ddev_bash_completion.sh"), true)
 	if err != nil {
 		util.Failed("could not generate ddev_bash_completion.sh: %v", err)
 	}
@@ -27,8 +26,12 @@ func main() {
 	if err != nil {
 		util.Failed("could not generate ddev_fish_completion.sh: %v", err)
 	}
-	err = cmd.RootCmd.GenPowerShellCompletionFile(filepath.Join(targetDir, "ddev_powershell_completion.ps1"))
+	err = cmd.RootCmd.GenPowerShellCompletionFileWithDesc(filepath.Join(targetDir, "ddev_powershell_completion.ps1"))
 	if err != nil {
 		util.Failed("could not generate ddev_powershell_completion.ps1: %v", err)
+	}
+	err = genFigSpecCompletionFile(filepath.Join(targetDir, "ddev_fig_spec.ts"))
+	if err != nil {
+		util.Failed("could not generate ddev_fig_spec.ts: %v", err)
 	}
 }

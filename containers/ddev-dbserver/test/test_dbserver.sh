@@ -1,7 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Find the directory of this script
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+export TEST_SCRIPT_DIR=${DIR}/../../testscripts
 
 set -o errexit
 set -o pipefail
@@ -14,7 +15,7 @@ fi
 export DB_TYPE=$1
 export DB_VERSION=$2
 export TAG=$3
-export IMAGE=drud/ddev-dbserver-${DB_TYPE}-${DB_VERSION}:${TAG}
+export IMAGE=ddev/ddev-dbserver-${DB_TYPE}-${DB_VERSION}:${TAG}
 
 export CURRENT_ARCH=$(../get_arch.sh)
 

@@ -1,17 +1,16 @@
 package cmd
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/stretchr/testify/assert"
 )
 
 var override = `
-version: '3.6'
 services:
   web:
     labels:
@@ -48,7 +47,7 @@ func TestComposeConfigCmd(t *testing.T) {
 
 	// Create a docker-compose.override.yaml
 	overrideFile := filepath.Join(tmpdir, ".ddev", "docker-compose.override.yaml")
-	err = ioutil.WriteFile(overrideFile, []byte(override), 0644)
+	err = os.WriteFile(overrideFile, []byte(override), 0644)
 	assert.NoError(t, err)
 
 	// Ensure ddev debug compose-config includes override values

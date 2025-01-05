@@ -1,20 +1,22 @@
 package cmd
 
 import (
-	"github.com/drud/ddev/pkg/fileutil"
 	"strings"
 
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/fileutil"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/util"
 	"github.com/spf13/cobra"
 )
 
 // DebugComposeConfigCmd implements the ddev debug compose-config command
 var DebugComposeConfigCmd = &cobra.Command{
-	Use:   "compose-config [project]",
-	Short: "Prints the docker-compose configuration of the current project",
-	Run: func(cmd *cobra.Command, args []string) {
+	ValidArgsFunction: ddevapp.GetProjectNamesFunc("all", 1),
+	Use:               "compose-config [project]",
+	Short:             "Prints the docker-compose configuration of the current project",
+	Run: func(_ *cobra.Command, args []string) {
 		projectName := ""
 
 		if len(args) > 1 {

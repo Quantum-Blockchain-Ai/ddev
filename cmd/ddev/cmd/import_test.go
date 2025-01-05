@@ -6,9 +6,8 @@ import (
 
 	"os"
 
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/fileutil"
-	gohomedir "github.com/mitchellh/go-homedir"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/fileutil"
 	asrt "github.com/stretchr/testify/assert"
 )
 
@@ -18,7 +17,7 @@ func TestImportTilde(t *testing.T) {
 
 	site := TestSites[0]
 
-	homedir, err := gohomedir.Dir()
+	homedir, err := os.UserHomeDir()
 	assert.NoError(err)
 	cwd, _ := os.Getwd()
 	testFile := filepath.Join(homedir, "testfile.tar.gz")
@@ -28,8 +27,8 @@ func TestImportTilde(t *testing.T) {
 	cleanup := site.Chdir()
 	defer rmFile(testFile)
 
-	// this ~ should be expanded by shell
-	args := []string{"import-files", "--src", "~/testfile.tar.gz"}
+	// This ~ should be expanded by shell
+	args := []string{"import-files", "--source", "~/testfile.tar.gz"}
 	out, err := exec.RunCommand(DdevBin, args)
 	if err != nil {
 		t.Log("Error Output from ddev import-files:", out, site)
@@ -37,8 +36,8 @@ func TestImportTilde(t *testing.T) {
 	assert.NoError(err)
 	assert.Contains(string(out), "Successfully imported files")
 
-	// this ~ is not expanded by shell, ddev should convert it to a valid path
-	args = []string{"import-files", "--src=~/testfile.tar.gz"}
+	// That ~ is not expanded by shell, DDEV should convert it to a valid path
+	args = []string{"import-files", "--source=~/testfile.tar.gz"}
 	out, err = exec.RunCommand(DdevBin, args)
 	if err != nil {
 		t.Log("Error Output from ddev import-files:", out, site)
@@ -51,7 +50,7 @@ func TestImportTilde(t *testing.T) {
 	assert.NoError(nil)
 }
 
-// rmFile simply allows us to defer os.Remove while ignoring the error return.
+// rmFile allows us to defer os.Remove while ignoring the error return.
 func rmFile(fullPath string) {
 	_ = os.Remove(fullPath)
 }

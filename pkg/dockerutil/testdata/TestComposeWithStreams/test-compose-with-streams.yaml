@@ -1,7 +1,8 @@
 networks:
-  default:
-    external:
-      name: ddev_default
+  ddev_default:
+    name: ddev_default
+    external: true
+
 services:
   web:
     container_name: TestComposeWithStreams
@@ -34,5 +35,3 @@ services:
       retries: 25
       start_period: 20s
       timeout: 120s
-
-version: '3.6'

@@ -1,0 +1,12 @@
+#ddev-generated
+
+tls:
+  stores:
+  {{ if not .UseLetsEncrypt }}
+    default:
+      defaultCertificate:
+        certFile: {{ .TargetCertsPath }}/default_cert.crt
+        keyFile: {{ .TargetCertsPath }}/default_key.key
+  {{ else }}
+    default: { }
+  {{ end }}

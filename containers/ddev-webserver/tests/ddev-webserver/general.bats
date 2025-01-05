@@ -1,16 +1,24 @@
 #!/usr/bin/env bats
 
+# Requires bats-assert and bats-support
+# brew tap kaos/shell &&
+# brew install bats-core bats-assert bats-support
+setup() {
+  load setup.sh
+}
+
 @test "Verify required binaries are installed in normal image" {
     if [ "${IS_HARDENED}" == "true" ]; then skip "Skipping because IS_HARDENED==true"; fi
-    COMMANDS="composer ddev-live drush git magerun magerun2 mkcert node npm platform sudo terminus wp"
+    COMMANDS="composer drush8 git magerun magerun2 mkcert mysql mysqladmin mysqldump node npm platform sudo symfony terminus wp"
     for item in $COMMANDS; do
-       docker exec $CONTAINER_NAME bash -c "command -v $item >/dev/null"
+#      echo "# looking for $item" >&3
+      docker exec $CONTAINER_NAME bash -c "command -v $item >/dev/null"
     done
 }
 
 @test "Verify some binaries binaries (sudo) are NOT installed in hardened image" {
     if [ "${IS_HARDENED}" != "true" ]; then skip "Skipping because IS_HARDENED==false"; fi
-    COMMANDS="ddev-live sudo terminus"
+    COMMANDS="sudo terminus"
     for item in $COMMANDS; do
       rv=1
       docker exec $CONTAINER_NAME bash -c "command -v $item >/dev/null 2>/dev/null" || rv=$?
@@ -24,6 +32,10 @@
 
 @test "verify that xdebug is disabled by default when using start.sh to start" {
     docker exec $CONTAINER_NAME bash -c 'php --version | grep -v "with Xdebug"'
+}
+
+@test "verify that xhprof is disabled by default when using start.sh to start" {
+    docker exec $CONTAINER_NAME bash -c 'php --modules | grep -v "xhprof"'
 }
 
 @test "verify that composer v2 is installed by default" {
@@ -45,4 +57,22 @@
 	if [ "$ERRMSG" != "Upstream error message" ] ; then
 	  exit 108
 	fi
+}
+
+@test "verify that xdebug is not enabled by default" {
+  docker run --rm $DOCKER_IMAGE bash -c 'php --version | grep -v "with Xdebug"'
+}
+
+@test "verify apt keys are not expiring within ${DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION:-90} days" {
+  if [ "${DDEV_IGNORE_EXPIRING_KEYS:-}" = "true" ]; then
+    skip "Skipping because DDEV_IGNORE_EXPIRING_KEYS is set"
+  fi
+  docker cp ${TEST_SCRIPT_DIR}/check_key_expirations.sh ${CONTAINER_NAME}:/tmp
+  docker exec -u root -e "DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION=${DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION:-90}" ${CONTAINER_NAME} /tmp/check_key_expirations.sh >&3
+}
+
+@test "verify python is installed" {
+  run docker exec ${CONTAINER_NAME} python --version
+  assert_success
+  assert_output --partial "Python 3"
 }

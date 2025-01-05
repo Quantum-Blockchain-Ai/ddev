@@ -7,10 +7,11 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig"
-	"github.com/drud/ddev/pkg/archive"
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/archive"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/util"
+	copy2 "github.com/otiai10/copy"
 )
 
 // WordpressConfig encapsulates all the configurations for a WordPress site.
@@ -36,6 +37,8 @@ type WordpressConfig struct {
 	SiteSettings     string
 	SiteSettingsDdev string
 	AbsPath          string
+	DbCharset        string
+	DbCollate        string
 }
 
 // NewWordpressConfig produces a WordpressConfig object with defaults.
@@ -45,7 +48,7 @@ func NewWordpressConfig(app *DdevApp, absPath string) *WordpressConfig {
 		DatabaseName:     "db",
 		DatabaseUsername: "db",
 		DatabasePassword: "db",
-		DatabaseHost:     "db",
+		DatabaseHost:     "ddev-" + app.Name + "-db",
 		DeployURL:        app.GetPrimaryURL(),
 		Docroot:          "/var/www/html/docroot",
 		TablePrefix:      "wp_",
@@ -57,10 +60,12 @@ func NewWordpressConfig(app *DdevApp, absPath string) *WordpressConfig {
 		NonceSalt:        util.RandString(64),
 		SecureAuthKey:    util.RandString(64),
 		SecureAuthSalt:   util.RandString(64),
-		Signature:        DdevFileSignature,
+		Signature:        nodeps.DdevFileSignature,
 		SiteSettings:     "wp-config.php",
 		SiteSettingsDdev: "wp-config-ddev.php",
 		AbsPath:          absPath,
+		DbCharset:        "utf8",
+		DbCollate:        "",
 	}
 }
 
@@ -75,86 +80,14 @@ func getWordpressHooks() []byte {
 	return []byte(wordPressHooks)
 }
 
-// getWordpressUploadDir will return a custom upload dir if defined, returning a default path if not.
-func getWordpressUploadDir(app *DdevApp) string {
-	if app.UploadDir == "" {
-		return "wp-content/uploads"
-	}
-
-	return app.UploadDir
+// getWordpressUploadDirs will return the default paths.
+func getWordpressUploadDirs(_ *DdevApp) []string {
+	return []string{"wp-content/uploads"}
 }
-
-const wordpressSettingsTemplate = `<?php
-{{ $config := . }}
-/**
- {{ $config.Signature }}: Automatically generated WordPress settings file.
- ddev manages this file and may delete or overwrite the file unless this comment is removed.
- It is recommended that you leave this file alone.
- */
-
-/** Authentication Unique Keys and Salts. */
-define('AUTH_KEY',         '{{ $config.AuthKey }}');
-define('SECURE_AUTH_KEY',  '{{ $config.SecureAuthKey }}');
-define('LOGGED_IN_KEY',    '{{ $config.LoggedInKey }}');
-define('NONCE_KEY',        '{{ $config.NonceKey }}');
-define('AUTH_SALT',        '{{ $config.AuthSalt }}');
-define('SECURE_AUTH_SALT', '{{ $config.SecureAuthSalt }}');
-define('LOGGED_IN_SALT',   '{{ $config.LoggedInSalt }}');
-define('NONCE_SALT',       '{{ $config.NonceSalt }}');
-
-/** Absolute path to the WordPress directory. */
-define('ABSPATH', dirname(__FILE__) . '/{{ $config.AbsPath }}');
-
-// Include for settings managed by ddev.
-$ddev_settings = dirname(__FILE__) . '/wp-config-ddev.php';
-if (is_readable($ddev_settings) && !defined('DB_USER') && getenv('IS_DDEV_PROJECT') == 'true') {
-  require_once($ddev_settings);
-}
-
-/** Include wp-settings.php */
-if (file_exists(ABSPATH . '/wp-settings.php')) {
-  require_once ABSPATH . '/wp-settings.php';
-}
-`
-
-const wordpressDdevSettingsTemplate = `<?php
-{{ $config := . }}
-/**
-{{ $config.Signature }}: Automatically generated WordPress settings file.
- ddev manages this file and may delete or overwrite the file unless this comment is removed.
- */
-
-if (getenv('IS_DDEV_PROJECT') == 'true') {
-  /** The name of the database for WordPress */
-  define('DB_NAME', '{{ $config.DatabaseName }}');
-  
-  /** MySQL database username */
-  define('DB_USER', '{{ $config.DatabaseUsername }}');
-  
-  /** MySQL database password */
-  define('DB_PASSWORD', '{{ $config.DatabasePassword }}');
-  
-  /** MySQL hostname */
-  define('DB_HOST', '{{ $config.DatabaseHost }}');
-
-  /** WP_HOME URL */
-  define('WP_HOME', '{{ $config.DeployURL }}');
-  
-  /** WP_SITEURL location */
-  define('WP_SITEURL', WP_HOME . '/{{ $config.AbsPath  }}');
-}
-
-/** Enable debug */
-define('WP_DEBUG', true);
-
-
-/** Define the database table prefix */
-$table_prefix  = 'wp_';
-`
 
 const wordpressConfigInstructions = `
 An existing user-managed wp-config.php file has been detected!
-Project ddev settings have been written to:
+Project DDEV settings have been written to:
 
 %s
 
@@ -186,7 +119,7 @@ func createWordpressSettingsFile(app *DdevApp) (string, error) {
 
 	config := NewWordpressConfig(app, absPath)
 
-	//  write ddev settings file
+	// Write DDEV settings file
 	if err := writeWordpressDdevSettingsFile(config, app.SiteDdevSettingsFile); err != nil {
 		return "", err
 	}
@@ -194,7 +127,7 @@ func createWordpressSettingsFile(app *DdevApp) (string, error) {
 	// Check if an existing WordPress settings file exists
 	if fileutil.FileExists(app.SiteSettingsPath) {
 		// Check if existing WordPress settings file is ddev-managed
-		sigExists, err := fileutil.FgrepStringInFile(app.SiteSettingsPath, DdevFileSignature)
+		sigExists, err := fileutil.FgrepStringInFile(app.SiteSettingsPath, nodeps.DdevFileSignature)
 		if err != nil {
 			return "", err
 		}
@@ -206,10 +139,10 @@ func createWordpressSettingsFile(app *DdevApp) (string, error) {
 			}
 		} else {
 			// Settings file exists and is not ddev-managed, alert the user to the location
-			// of the generated ddev settings file
+			// of the generated DDEV settings file
 			includeExists, err := fileutil.FgrepStringInFile(app.SiteSettingsPath, "wp-config-ddev.php")
 			if err != nil {
-				util.Warning("Unable to check that the ddev settings file has been included: %v", err)
+				util.Warning("Unable to check that the DDEV settings file has been included: %v", err)
 			}
 
 			if includeExists {
@@ -231,14 +164,14 @@ func createWordpressSettingsFile(app *DdevApp) (string, error) {
 // writeWordpressSettingsFile dynamically produces valid wp-config.php file by combining a configuration
 // object with a data-driven template.
 func writeWordpressSettingsFile(wordpressConfig *WordpressConfig, filePath string) error {
-	tmpl, err := template.New("wordpressConfig").Funcs(sprig.TxtFuncMap()).Parse(wordpressSettingsTemplate)
+	t, err := template.New("wp-config.php").ParseFS(bundledAssets, "wordpress/wp-config.php")
 	if err != nil {
 		return err
 	}
 
 	// Ensure target directory exists and is writable
 	dir := filepath.Dir(filePath)
-	if err = os.Chmod(dir, 0755); os.IsNotExist(err) {
+	if err = util.Chmod(dir, 0755); os.IsNotExist(err) {
 		if err = os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -252,7 +185,8 @@ func writeWordpressSettingsFile(wordpressConfig *WordpressConfig, filePath strin
 	}
 	defer util.CheckClose(file)
 
-	if err = tmpl.Execute(file, wordpressConfig); err != nil {
+	//nolint: revive
+	if err = t.Execute(file, wordpressConfig); err != nil {
 		return err
 	}
 
@@ -263,7 +197,7 @@ func writeWordpressSettingsFile(wordpressConfig *WordpressConfig, filePath strin
 func writeWordpressDdevSettingsFile(config *WordpressConfig, filePath string) error {
 	if fileutil.FileExists(filePath) {
 		// Check if the file is managed by ddev.
-		signatureFound, err := fileutil.FgrepStringInFile(filePath, DdevFileSignature)
+		signatureFound, err := fileutil.FgrepStringInFile(filePath, nodeps.DdevFileSignature)
 		if err != nil {
 			return err
 		}
@@ -275,14 +209,14 @@ func writeWordpressDdevSettingsFile(config *WordpressConfig, filePath string) er
 		}
 	}
 
-	tmpl, err := template.New("wordpressConfig").Funcs(sprig.TxtFuncMap()).Parse(wordpressDdevSettingsTemplate)
+	t, err := template.New("wp-config-ddev.php").ParseFS(bundledAssets, "wordpress/wp-config-ddev.php")
 	if err != nil {
 		return err
 	}
 
 	// Ensure target directory exists and is writable
 	dir := filepath.Dir(filePath)
-	if err = os.Chmod(dir, 0755); os.IsNotExist(err) {
+	if err = util.Chmod(dir, 0755); os.IsNotExist(err) {
 		if err = os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -296,15 +230,12 @@ func writeWordpressDdevSettingsFile(config *WordpressConfig, filePath string) er
 	}
 	defer util.CheckClose(file)
 
-	if err = tmpl.Execute(file, config); err != nil {
-		return err
-	}
-
-	return nil
+	err = t.Execute(file, config)
+	return err
 }
 
 // setWordpressSiteSettingsPaths sets the expected settings files paths for
-// a wordpress site.
+// a WordPress site.
 func setWordpressSiteSettingsPaths(app *DdevApp) {
 	config := NewWordpressConfig(app, "")
 
@@ -331,22 +262,22 @@ func isWordpressApp(app *DdevApp) bool {
 
 // wordpressImportFilesAction defines the Wordpress workflow for importing project files.
 // The Wordpress workflow is currently identical to the Drupal import-files workflow.
-func wordpressImportFilesAction(app *DdevApp, importPath, extPath string) error {
-	destPath := filepath.Join(app.GetAppRoot(), app.GetDocroot(), app.GetUploadDir())
+func wordpressImportFilesAction(app *DdevApp, target, importPath, extPath string) error {
+	destPath := app.calculateHostUploadDirFullPath(target)
 
-	// parent of destination dir should exist
+	// Parent of destination dir should exist
 	if !fileutil.FileExists(filepath.Dir(destPath)) {
 		return fmt.Errorf("unable to import to %s: parent directory does not exist", destPath)
 	}
 
-	// parent of destination dir should be writable.
-	if err := os.Chmod(filepath.Dir(destPath), 0755); err != nil {
+	// Parent of destination dir should be writable.
+	if err := util.Chmod(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
 
-	// If the destination path exists, remove it as was warned
+	// If the destination path exists, purge it as was warned
 	if fileutil.FileExists(destPath) {
-		if err := os.RemoveAll(destPath); err != nil {
+		if err := fileutil.PurgeDirectory(destPath); err != nil {
 			return fmt.Errorf("failed to cleanup %s before import: %v", destPath, err)
 		}
 	}
@@ -367,7 +298,7 @@ func wordpressImportFilesAction(app *DdevApp, importPath, extPath string) error 
 		return nil
 	}
 
-	if err := fileutil.CopyDir(importPath, destPath); err != nil {
+	if err := copy2.Copy(importPath, destPath); err != nil {
 		return err
 	}
 
@@ -405,12 +336,4 @@ func wordpressGetRelativeAbsPath(app *DdevApp) (string, error) {
 	absPath := filepath.Base(filepath.Dir(subDirMatches[0]))
 
 	return absPath, nil
-}
-
-// wordpressPostStartAction handles post-start actions
-func wordpressPostStartAction(app *DdevApp) error {
-	if _, err := app.CreateSettingsFile(); err != nil {
-		return fmt.Errorf("failed to write settings file %s: %v", app.SiteDdevSettingsFile, err)
-	}
-	return nil
 }

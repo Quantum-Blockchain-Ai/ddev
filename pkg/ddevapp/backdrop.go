@@ -2,15 +2,18 @@ package ddevapp
 
 import (
 	"fmt"
-	"github.com/drud/ddev/pkg/dockerutil"
 	"os"
+	"path"
 	"path/filepath"
 	"text/template"
 
-	"github.com/drud/ddev/pkg/archive"
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/archive"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/util"
+	copy2 "github.com/otiai10/copy"
 )
 
 // BackdropSettings holds database connection details for Backdrop.
@@ -21,7 +24,6 @@ type BackdropSettings struct {
 	DatabaseHost     string
 	DatabaseDriver   string
 	DatabasePort     string
-	DatabasePrefix   string
 	HashSalt         string
 	Signature        string
 	SiteSettings     string
@@ -39,44 +41,17 @@ func NewBackdropSettings(app *DdevApp) *BackdropSettings {
 		DatabaseName:     "db",
 		DatabaseUsername: "db",
 		DatabasePassword: "db",
-		DatabaseHost:     "db",
+		DatabaseHost:     "ddev-" + app.Name + "-db",
 		DatabaseDriver:   "mysql",
-		DatabasePort:     GetPort("db"),
-		DatabasePrefix:   "",
-		HashSalt:         util.RandString(64),
-		Signature:        DdevFileSignature,
+		DatabasePort:     GetExposedPort(app, "db"),
+		HashSalt:         util.HashSalt(app.Name),
+		Signature:        nodeps.DdevFileSignature,
 		SiteSettings:     "settings.php",
 		SiteSettingsDdev: "settings.ddev.php",
 		DockerIP:         dockerIP,
 		DBPublishedPort:  dbPublishedPort,
 	}
 }
-
-// BackdropDdevSettingsTemplate defines the template that will become settings.ddev.php.
-const BackdropDdevSettingsTemplate = `<?php
-{{ $config := . }}
-/**
- {{ $config.Signature }}: Automatically generated Backdrop settings.ddev.php file.
- ddev manages this file and may delete or overwrite the file unless this comment is removed.
- */
-
-$host = "{{ $config.DatabaseHost }}";
-$port = {{ $config.DatabasePort }};
-
-// If DDEV_PHP_VERSION is not set but IS_DDEV_PROJECT *is*, it means we're running (drush) on the host,
-// so use the host-side bind port on docker IP
-if (empty(getenv('DDEV_PHP_VERSION') && getenv('IS_DDEV_PROJECT') == "true")) {
-  $host = "{{ $config.DockerIP }}";
-  $port = {{ $config.DBPublishedPort }};
-} 
-
-$database = "{{ $config.DatabaseDriver }}://{{ $config.DatabaseUsername }}:{{ $config.DatabasePassword }}@$host:$port/{{ $config.DatabaseName }}";
-$database_prefix = '{{ $config.DatabasePrefix }}';
-
-$settings['update_free_access'] = FALSE;
-$settings['hash_salt'] = '{{ $config.HashSalt }}';
-$settings['backdrop_drupal_compatibility'] = TRUE;
-`
 
 // createBackdropSettingsFile manages creation and modification of settings.php and settings.ddev.php.
 // If a settings.php file already exists, it will be modified to ensure that it includes
@@ -86,7 +61,7 @@ func createBackdropSettingsFile(app *DdevApp) (string, error) {
 
 	if !fileutil.FileExists(app.SiteSettingsPath) {
 		output.UserOut.Printf("No %s file exists, creating one", settings.SiteSettings)
-		if err := writeDrupalSettingsFile(app.SiteSettingsPath, app.Type); err != nil {
+		if err := writeDrupalSettingsPHP(app); err != nil {
 			return "", err
 		}
 	}
@@ -101,24 +76,24 @@ func createBackdropSettingsFile(app *DdevApp) (string, error) {
 	} else {
 		output.UserOut.Printf("Existing %s file does not include %s, modifying to include ddev settings", settings.SiteSettings, settings.SiteSettingsDdev)
 
-		if err = appendIncludeToDrupalSettingsFile(app.SiteSettingsPath, app.Type); err != nil {
+		if err = appendIncludeToDrupalSettingsFile(app); err != nil {
 			return "", fmt.Errorf("failed to include %s in %s: %v", settings.SiteSettingsDdev, settings.SiteSettings, err)
 		}
 	}
 
-	if err = writeBackdropDdevSettingsFile(settings, app.SiteDdevSettingsFile); err != nil {
+	if err = writeBackdropSettingsDdevPHP(settings, app.SiteDdevSettingsFile, app); err != nil {
 		return "", fmt.Errorf("failed to write Drupal settings file %s: %v", app.SiteDdevSettingsFile, err)
 	}
 
 	return app.SiteDdevSettingsFile, nil
 }
 
-// writeBackdropDdevSettingsFile dynamically produces a valid settings.ddev.php file
+// writeBackdropSettingsDdevPHP dynamically produces a valid settings.ddev.php file
 // by combining a configuration object with a data-driven template.
-func writeBackdropDdevSettingsFile(settings *BackdropSettings, filePath string) error {
+func writeBackdropSettingsDdevPHP(settings *BackdropSettings, filePath string, _ *DdevApp) error {
 	if fileutil.FileExists(filePath) {
 		// Check if the file is managed by ddev.
-		signatureFound, err := fileutil.FgrepStringInFile(filePath, DdevFileSignature)
+		signatureFound, err := fileutil.FgrepStringInFile(filePath, nodeps.DdevFileSignature)
 		if err != nil {
 			return err
 		}
@@ -129,14 +104,14 @@ func writeBackdropDdevSettingsFile(settings *BackdropSettings, filePath string) 
 			return nil
 		}
 	}
-	tmpl, err := template.New("settings.ddev.php").Funcs(getTemplateFuncMap()).Parse(BackdropDdevSettingsTemplate)
+	t, err := template.New("settings.ddev.php").ParseFS(bundledAssets, path.Join("drupal/backdrop/settings.ddev.php"))
 	if err != nil {
 		return err
 	}
 
 	// Ensure target directory exists and is writable
 	dir := filepath.Dir(filePath)
-	if err = os.Chmod(dir, 0755); os.IsNotExist(err) {
+	if err = util.Chmod(dir, 0755); os.IsNotExist(err) {
 		if err = os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -150,20 +125,13 @@ func writeBackdropDdevSettingsFile(settings *BackdropSettings, filePath string) 
 	}
 	defer util.CheckClose(file)
 
-	if err := tmpl.Execute(file, settings); err != nil {
-		return err
-	}
-
-	return nil
+	err = t.Execute(file, settings)
+	return err
 }
 
-// getBackdropUploadDir will return a custom upload dir if defined, returning a default path if not.
-func getBackdropUploadDir(app *DdevApp) string {
-	if app.UploadDir == "" {
-		return "files"
-	}
-
-	return app.UploadDir
+// getBackdropUploadDirs will return the default paths.
+func getBackdropUploadDirs(_ *DdevApp) []string {
+	return []string{"files"}
 }
 
 // getBackdropHooks for appending as byte array.
@@ -192,15 +160,15 @@ func isBackdropApp(app *DdevApp) bool {
 
 // backdropPostImportDBAction emits a warning about moving configuration into place
 // appropriately in order for Backdrop to function properly.
-func backdropPostImportDBAction(app *DdevApp) error {
-	util.Warning("Backdrop sites require your config JSON files to be located in your site's \"active\" configuration directory. Please refer to the Backdrop documentation (https://backdropcms.org/user-guide/moving-backdrop-site) for more information about this process.")
+func backdropPostImportDBAction(_ *DdevApp) error {
+	util.Warning("Backdrop sites require your config JSON files to be located in your site's \"active\" configuration directory. Please refer to the Backdrop documentation (https://docs.backdropcms.org/documentation/deploying-a-backdrop-site) for more information about this process.")
 	return nil
 }
 
 // backdropImportFilesAction defines the Backdrop workflow for importing project files.
 // The Backdrop workflow is currently identical to the Drupal import-files workflow.
-func backdropImportFilesAction(app *DdevApp, importPath, extPath string) error {
-	destPath := filepath.Join(app.GetAppRoot(), app.GetDocroot(), app.GetUploadDir())
+func backdropImportFilesAction(app *DdevApp, uploadDir, importPath, extPath string) error {
+	destPath := app.calculateHostUploadDirFullPath(uploadDir)
 
 	// parent of destination dir should exist
 	if !fileutil.FileExists(filepath.Dir(destPath)) {
@@ -208,13 +176,13 @@ func backdropImportFilesAction(app *DdevApp, importPath, extPath string) error {
 	}
 
 	// parent of destination dir should be writable.
-	if err := os.Chmod(filepath.Dir(destPath), 0755); err != nil {
+	if err := util.Chmod(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
 
-	// If the destination path exists, remove it as was warned
+	// If the destination path exists, purge it
 	if fileutil.FileExists(destPath) {
-		if err := os.RemoveAll(destPath); err != nil {
+		if err := fileutil.PurgeDirectory(destPath); err != nil {
 			return fmt.Errorf("failed to cleanup %s before import: %v", destPath, err)
 		}
 	}
@@ -235,14 +203,14 @@ func backdropImportFilesAction(app *DdevApp, importPath, extPath string) error {
 		return nil
 	}
 
-	if err := fileutil.CopyDir(importPath, destPath); err != nil {
+	if err := copy2.Copy(importPath, destPath); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// backdropPostStartAction handles default post-start actions for backdrop apps, like ensuring
+// backdropPostStartAction handles default post-start actions for Backdrop apps, like ensuring
 // useful permissions settings on sites/default.
 func backdropPostStartAction(app *DdevApp) error {
 	// Drush config has to be written after start because we don't know the ports until it's started
@@ -255,4 +223,14 @@ func backdropPostStartAction(app *DdevApp) error {
 		return fmt.Errorf("failed to write settings file %s: %v", app.SiteDdevSettingsFile, err)
 	}
 	return nil
+}
+
+// getBackdropComposerCreateAllowedPaths returns fullpaths that are allowed to be present when running composer create
+func getBackdropComposerCreateAllowedPaths(app *DdevApp) ([]string, error) {
+	var allowed []string
+
+	// drushrc.php path
+	allowed = append(allowed, filepath.Join(filepath.Dir(app.SiteSettingsPath), "drushrc.php"))
+
+	return allowed, nil
 }

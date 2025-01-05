@@ -1,14 +1,22 @@
-## The Problem/Issue/Bug:
+<!-- 
+  PR titles have very precise rules, please read 
+  https://ddev.readthedocs.io/en/stable/developers/building-contributing/#open-pull-requests
+-->
 
-## How this PR Solves The Problem:
+## The Issue
 
-## Manual Testing Instructions:
+- #<issue number>
 
-## Automated Testing Overview:
-<!-- Please provide an overview of tests introduced by this PR, or an explanation for why no tests are needed. -->
+<!-- Provide a brief description of the issue. -->
 
-## Related Issue Link(s):
+## How This PR Solves The Issue
 
-## Release/Deployment notes:
-<!-- Does this affect anything else, or are there ramifications for other code? Does anything have to be done on deployment? -->
+## Manual Testing Instructions
 
+## Automated Testing Overview
+
+<!-- Please describe the tests introduced by this PR, or explain why no tests are needed. -->
+
+## Release/Deployment Notes
+
+<!-- Does this affect anything else or have ramifications for other code? Does anything have to be done on deployment? -->

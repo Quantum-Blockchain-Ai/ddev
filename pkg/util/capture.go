@@ -2,9 +2,9 @@ package util
 
 import (
 	"bytes"
-	"github.com/drud/ddev/pkg/output"
+	"fmt"
+	"github.com/ddev/ddev/pkg/output"
 	"io"
-	"io/ioutil"
 	"os"
 )
 
@@ -61,12 +61,12 @@ func CaptureStdOut() func() string {
 	}
 }
 
-// CaptureStdOutToFile captures Stdout to a string. Capturing starts when it is called. It returns an anonymous function that when called, will return a string
+// CaptureOutputToFile captures Stdout to a string. Capturing starts when it is called. It returns an anonymous function that when called, will return a string
 // containing the output during capture, and revert once again to the original value of os.StdOut.
 func CaptureOutputToFile() (func() string, error) {
 	oldStdout := os.Stdout // keep backup of the real stdout
 	oldStderr := os.Stderr
-	f, err := ioutil.TempFile("", "CaptureOutputToFile")
+	f, err := os.CreateTemp("", "CaptureOutputToFile")
 	if err != nil {
 		return nil, err
 	}
@@ -77,8 +77,13 @@ func CaptureOutputToFile() (func() string, error) {
 		_ = f.Close()
 		os.Stdout = oldStdout // restoring the real stdout
 		os.Stderr = oldStderr
-		out, _ := ioutil.ReadFile(f.Name())
-		_ = os.RemoveAll(f.Name())
+		out, err := os.ReadFile(f.Name())
+		if err != nil {
+			out = []byte(fmt.Sprintf("failed to read file: %v", err))
+		}
+		defer func() {
+			_ = os.RemoveAll(f.Name())
+		}()
 		return string(out)
 	}, nil
 }

@@ -1,21 +1,26 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"sort"
 
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
-	"github.com/drud/ddev/pkg/version"
-	"github.com/gosuri/uitable"
+	"github.com/ddev/ddev/pkg/amplitude"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/styles"
+
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/version"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 )
 
 // versionCmd represents the version command
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "print ddev version and component versions",
-	Long:  `Display the version of this ddev binary and its components.`,
+	Short: "Print DDEV version and component versions",
+	Long:  `Display the version of this DDEV binary and its components.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) > 0 {
 			err := cmd.Usage()
@@ -23,9 +28,27 @@ var versionCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		_, err := dockerutil.DownloadDockerComposeIfNeeded()
+		if err != nil {
+			util.Failed("Failed to check for and download docker-compose: %v", err)
+		}
+
 		v := version.GetVersionInfo()
 
-		versionOutput := uitable.New()
+		var out bytes.Buffer
+		t := table.NewWriter()
+		t.SetOutputMirror(&out)
+
+		// Use simplest possible output
+		s := styles.GetTableStyle("default")
+		s.Options.SeparateRows = false
+		s.Options.SeparateFooter = false
+		s.Options.SeparateColumns = false
+		s.Options.SeparateHeader = false
+		s.Options.DrawBorder = false
+		t.SetStyle(s)
+
+		t.AppendHeader(table.Row{"Item", "Value"})
 
 		keys := make([]string, 0, len(v))
 		for k := range v {
@@ -35,11 +58,14 @@ var versionCmd = &cobra.Command{
 
 		for _, label := range keys {
 			if label != "build info" {
-				versionOutput.AddRow(label, v[label])
+				t.AppendRow(table.Row{
+					label, v[label],
+				})
 			}
 		}
-
-		output.UserOut.WithField("raw", v).Println(versionOutput)
+		t.Render()
+		output.UserOut.WithField("raw", v).Println(out.String())
+		amplitude.CheckSetUp()
 	},
 }
 

@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"os"
-
 	"strings"
 
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -16,11 +14,15 @@ var execDirArg string
 
 // DdevExecCmd allows users to execute arbitrary sh commands within a container.
 var DdevExecCmd = &cobra.Command{
-	Use:     "exec <command>",
+	Use:     "exec [flags] [command] [command-flags]",
 	Aliases: []string{"."},
 	Short:   "Execute a shell command in the container for a service. Uses the web service by default.",
-	Long:    `Execute a shell command in the container for a service. Uses the web service by default. To run your command in the container for another service, run "ddev exec --service <service> <cmd>"`,
-	Example: "ddev exec ls /var/www/html\nddev exec --service db\nddev exec -s db\nddev exec -s solr (assuming an add-on service named 'solr')",
+	Long:    `Execute a shell command in the container for a service. Uses the web service by default. To run your command in the container for another service, run "ddev exec --service <service> <cmd>". If you want to use raw, uninterpreted command inside container use --raw as in example.`,
+	Example: `ddev exec ls /var/www/html
+ddev exec --service db
+ddev exec -s db
+ddev exec -s solr (assuming an add-on service named 'solr')
+ddev exec --raw -- ls -lR`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			err := cmd.Usage()
@@ -33,33 +35,39 @@ var DdevExecCmd = &cobra.Command{
 			util.Failed("Failed to exec command: %v", err)
 		}
 
-		if strings.Contains(app.SiteStatus(), ddevapp.SiteStopped) {
+		status, _ := app.SiteStatus()
+		if status != ddevapp.SiteRunning {
 			util.Failed("Project is not currently running. Try 'ddev start'.")
-		}
-
-		if strings.Contains(app.SiteStatus(), ddevapp.SitePaused) {
-			util.Failed("Project is paused. Run 'ddev start' to start it.")
 		}
 
 		app.DockerEnv()
 
-		out, _, err := app.Exec(&ddevapp.ExecOpts{
+		opts := &ddevapp.ExecOpts{
 			Service: serviceType,
 			Dir:     execDirArg,
 			Cmd:     strings.Join(args, " "),
 			Tty:     true,
-		})
+		}
+
+		// If they've chosen raw, use the actual passed values
+		if cmd.Flag("raw").Changed {
+			if useRaw, _ := cmd.Flags().GetBool("raw"); useRaw {
+				opts.RawCmd = args
+			}
+		}
+
+		_, _, err = app.Exec(opts)
 
 		if err != nil {
 			util.Failed("Failed to execute command %s: %v", strings.Join(args, " "), err)
 		}
-		output.UserOut.Print(out)
 	},
 }
 
 func init() {
 	DdevExecCmd.Flags().StringVarP(&serviceType, "service", "s", "web", "Defines the service to connect to. [e.g. web, db]")
 	DdevExecCmd.Flags().StringVarP(&execDirArg, "dir", "d", "", "Defines the execution directory within the container")
+	DdevExecCmd.Flags().Bool("raw", true, "Use raw exec (do not interpret with Bash inside container)")
 	// This requires flags for exec to be specified prior to any arguments, allowing for
 	// flags to be ignored by cobra for commands that are to be executed in a container.
 	DdevExecCmd.Flags().SetInterspersed(false)

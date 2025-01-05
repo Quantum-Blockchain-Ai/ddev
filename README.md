@@ -1,62 +1,60 @@
-# ddev
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/dark-ddev.svg">
+  <img alt="DDEV logo with light and dark mode variants" src="https://ddev.com/logos/ddev.svg">
+</picture>
 
-[![CircleCI](https://circleci.com/gh/drud/ddev.svg?style=shield)](https://circleci.com/gh/drud/ddev) [![Go Report Card](https://goreportcard.com/badge/github.com/drud/ddev)](https://goreportcard.com/report/github.com/drud/ddev) ![project is maintained](https://img.shields.io/maintenance/yes/2021.svg)
-[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/drud/ddev)
+---
 
-![ddev logo](images/ddev_logo.png)
+![project is maintained](https://img.shields.io/maintenance/yes/2025.svg)
+[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/ddev/ddev) <a href="https://github.com/codespaces/new/ddev/ddev"><img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub Codespaces" style="max-width: 100%; height: 20px;"></a>
 
-ddev is an open source tool that makes it simple to get local PHP development environments up and running in minutes. It's powerful and flexible as a result of its per-project environment configurations, which can be extended, version controlled, and shared. In short, ddev aims to allow development teams to use Docker in their workflow without the complexities of bespoke configuration.
+DDEV is an open-source tool for running local web development environments for PHP and Node.js, ready in minutes. Its powerful, flexible per-project environment configurations can be extended, version controlled, and shared. DDEV allows development teams to adopt a consistent Docker workflow without the complexities of bespoke configuration.
 
-## Getting Started
+## Documentation
 
-1. **Check System Requirements:** We support recent versions of macOS, Windows 10, and Linux distributions that will run Docker (ddev requires Docker and docker-compose). ([more info here](https://ddev.readthedocs.io/en/stable/#system-requirements)).
-2. **Install ddev:** [Options include](https://ddev.readthedocs.io/en/stable/#installation) macOS homebrew (recommended), an install script, or manual installation.
-3. **Read the Basics and Choose a CMS Quick Start Guide:**
-    * [DDEV-Local Basics](https://ddev.readthedocs.io/en/stable/users/cli-usage)
-    * [PHP (Generic Project) Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage/#php-project-quickstart)
-    * [WordPress Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#wordpress-quickstart)
-    * [Drupal 6 and 7 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#drupal-6/7-quickstart)
-    * [Drupal 8 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#drupal-8-quickstart)
-    * [Drupal 9 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#drupal-9-quickstart)
-    * [Backdrop Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage/#backdrop-quickstart)
-    * [TYPO3 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#typo3-quickstart)
-    * [Magento 1 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#magento-1-quickstart)
-    * [Magento 2 Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#magento-2-quickstart)
-    * [Laravel Quickstart](https://ddev.readthedocs.io/en/stable/users/cli-usage#laravel-quickstart)
-    * [Shopware 6 Quickstart](https://ddev.readthedocs.io/en/latest/users/cli-usage#shopware-6-quickstart)
+To check out live examples, docs, contributor live training, guides and more visit [ddev.com](https://ddev.com) and [ddev.readthedocs.io](https://ddev.readthedocs.io/en/stable/users/support)
 
-Having trouble? See our [support options below](#support). You might have trouble if [another local development tool is already using port 80 or 443](https://ddev.readthedocs.io/en/stable/users/troubleshooting/#unable-listen).
+## Questions
 
-## Partial Feature List
+If you need help, our friendly community provides [great support](https://ddev.readthedocs.io/en/stable/users/support/).
 
-* Quickly create multiple local web development environments based on code repositories.
-* Import database for a project you're working on.
-* Import upload files to match the project (e.g. Drupal's sites/default/files or WordPress's wp-content/uploads).
-* Pantheon integration - grab a Pantheon archive and work locally with the database and files.
-* Run commands within the docker environment using `ddev exec`.
-* View logs from the web and db containers.
-* Use `ddev ssh` to explore the linux environment inside the container.
+## Wonderful Sponsors
+
+DDEV is an Apache License 2.0 open-source project with its ongoing development made possible entirely by the support of these awesome backers. If you'd like to join them, please consider [sponsoring DDEV development](https://github.com/sponsors/ddev).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/resources/featured-sponsors-darkmode.svg">
+  <img alt="DDEV Sponsor logos with light and dark mode variants" src="https://ddev.com/resources/featured-sponsors.svg">
+</picture>
+
+## Contributing
+
+See “How can I contribute to DDEV?” in the [FAQ](https://ddev.readthedocs.io/en/stable/users/usage/faq/), and the [Contributing](CONTRIBUTING.md) page.
+
+![Overview of GitHub contributions](https://repobeats.axiom.co/api/embed/941b040a17921e974655fc01d7735aa350a53603.svg "Repobeats analytics image")
+
+## Get Started
+
+1. **Check [System Requirements](https://ddev.readthedocs.io/):** macOS (Intel and Apple Silicon), Windows 10/11, WSL2, Linux, [Gitpod](https://www.gitpod.io), and [GitHub Codespaces](https://github.com/codespaces).
+2. **Install a [Docker provider and DDEV](https://ddev.readthedocs.io/en/stable/users/install/)**.
+3. **Try a [CMS Quick Start Guide](https://ddev.readthedocs.io/en/stable/users/quickstart/)**.
+
+Additionally, [https://ddev.com/get-started/](https://ddev.com/get-started/) provides an up-to-date getting-started guide.
+
+## Highlighted Features
+
+* Quickly create local web development environments based on code repositories, with minimal configuration.
+* Import a database to any of your local environments.
+* Import upload files to match the project (e.g. Drupal sites/default/files or WordPress `wp-content/uploads`).
+* Customizable integration with hosting platforms like [Platform.sh](https://platform.sh), [Pantheon](https://pantheon.io), [Acquia](https://www.acquia.com) and others.
+* Run commands within the Docker environment using `ddev exec`.
+* View logs from the web and database containers.
+* Use `ddev ssh` to explore the Linux environment inside the container.
 * List running projects with `ddev list`.
 * Snapshot databases with `ddev snapshot`.
-* Temporarily share your development website with other using `ddev share`.
-* Trusted HTTPS support
+* Temporarily share your development website with others using `ddev share`.
+* Create custom commands as simple shell scripts.
+* Enjoy effortless, trusted HTTPS support.
+* Extend and customize environments as much (or as little!) as you need to.
 
-Just running `ddev` will show you all the commands.
-
-## Support
-
-We love to hear from our users and help them be successful with ddev. Support options include:
-
-* [ddev Documentation](https://ddev.readthedocs.io) and [faq](https://ddev.readthedocs.io/en/stable/users/faq/)
-* [ddev StackOverflow](https://stackoverflow.com/questions/tagged/ddev) for support and frequently asked questions. We respond quite quickly here and the results provide quite a library of user-curated solutions.
-* [ddev issue queue](https://github.com/drud/ddev/issues) for bugs and feature requests
-* The [gitter drud/ddev channel](https://gitter.im/drud/ddev) (it's easy to log in many diffferent ways)
-* The `#ddev` channels in [Drupal Slack](https://www.drupal.org/slack), [TYPO3 Slack](https://my.typo3.org/index.php?id=35) for interactive, immediate community support.
-* [ddev-contrib](https://github.com/drud/ddev-contrib) repo provides a number of vetted user-contributed recipes for extending and using ddev. Your contributions are welcome.
-* [awesome-ddev](https://github.com/drud/awesome-ddev) repo has loads of external resources, blog posts, recipes, screencasts, and the like. Your contributions are welcome.
-* [Twitter with tag #ddev](https://twitter.com/search?q=%23ddev&src=typd&f=live) will get to us, but it's not as good for interactive support, but we'll answer anywhere.
-
-## Additional Information
-
-* **Contributing** See the "How can I contribute" question in the [FAQ](https://ddev.readthedocs.io/en/stable/users/faq/).
-* **Roadmap:** See the [ddev roadmap](https://github.com/drud/ddev/wiki/roadmap). We love your input! Make requests in the [ddev issue queue](https://github.com/drud/ddev/issues).
+Run `ddev` to see all the [commands](https://ddev.readthedocs.io/en/stable/users/usage/cli/).

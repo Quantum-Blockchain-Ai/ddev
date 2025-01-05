@@ -1,5 +1,5 @@
 /**
- * ddev.nsi - DDEV Local Setup Script
+ * ddev.nsi - DDEV Setup Script
  *
  * Important hints on extending this installer, please follow this
  * instructions.
@@ -40,8 +40,6 @@
  */
 !addincludedir include
 
-
-
 /**
  * Version fallback for manual compilation
  */
@@ -52,8 +50,6 @@
   !define RELEASE_TAG "tag/${VERSION}"
 !endif
 
-
-
 /**
  * Product Settings
  *
@@ -62,27 +58,25 @@
  * and therefor defined as LanguageString later in the script.
  */
 !define PRODUCT_NAME "DDEV"
-!define PRODUCT_NAME_FULL "${PRODUCT_NAME} Local"
+!define PRODUCT_NAME_FULL "${PRODUCT_NAME}"
 !define PRODUCT_VERSION "${VERSION}"
-!define PRODUCT_PUBLISHER "Drud Technology LLC"
+!define PRODUCT_PUBLISHER "DDEV Foundation"
 
 !define PRODUCT_WEB_SITE "${PRODUCT_NAME} Website"
-!define PRODUCT_WEB_SITE_URL "https://www.ddev.com"
+!define PRODUCT_WEB_SITE_URL "https://ddev.com"
 
 !define PRODUCT_DOCUMENTATION "${PRODUCT_NAME} Documentation"
 !define PRODUCT_DOCUMENTATION_URL "https://ddev.readthedocs.io"
 
-!define PRODUCT_RELEASE_URL "https://github.com/drud/ddev/releases"
+!define PRODUCT_RELEASE_URL "https://github.com/ddev/ddev/releases"
 !define PRODUCT_RELEASE_NOTES "${PRODUCT_NAME} Release Notes"
 !define PRODUCT_RELEASE_NOTES_URL "${PRODUCT_RELEASE_URL}/${RELEASE_TAG}"
 
 !define PRODUCT_ISSUES "${PRODUCT_NAME} Issues"
-!define PRODUCT_ISSUES_URL "https://github.com/drud/ddev/issues"
+!define PRODUCT_ISSUES_URL "https://github.com/ddev/ddev/issues"
 
 !define PRODUCT_PROJECT "${PRODUCT_NAME} GitHub"
-!define PRODUCT_PROJECT_URL "https://github.com/drud/ddev#readme"
-
-
+!define PRODUCT_PROJECT_URL "https://github.com/ddev/ddev#readme"
 
 /**
  * Registry Settings
@@ -92,23 +86,33 @@
 !define REG_UNINST_ROOT "HKLM"
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 
-
+/**
+ * Third Party Applications
+ */
+!define GSUDO_NAME "gsudo"
+!define GSUDO_SETUP "gsudo.exe"
+!define GSUDO_VERSION "v2.5.1"
 
 /**
  * Configuration
  *
  * Has to be done before including headers
  */
-OutFile "..\.gotmp\bin\windows_amd64\ddev_windows_installer.${PRODUCT_VERSION}.exe"
+!ifndef TARGET_ARCH # passed on command-line
+  !error "TARGET_ARCH define is missing!"
+!endif
+Var TARGET_ARCH
+Var INSTALL_ARCH /* Architecture where installation is happening */
+Var GsudoExtractionSourceDir /* Used in extraction from the gsudo portable zipfile; x86 or arm64 */
+
+
+OutFile "..\.gotmp\bin\windows_${TARGET_ARCH}\ddev_windows_${TARGET_ARCH}_installer.exe"
 Unicode true
 SetCompressor /SOLID lzma
 
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 
 RequestExecutionLevel admin
-;ManifestSupportedOS
-
-
 
 /**
  * Installer Types
@@ -117,25 +121,17 @@ InstType "Full"
 InstType "Simple"
 InstType "Minimal"
 
-
-
 /**
  * Include Headers
  */
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
-;!include "Memento.nsh"
 !include "Sections.nsh"
 !include "x64.nsh"
 !include "WinVer.nsh"
 
 !include "ddev.nsh"
-!ifndef DOCKER_EXCLUDE
-  !include "docker.nsh"
-!endif
-
-
 
 /**
  * Local macros
@@ -146,8 +142,6 @@ Var ChocolateyMode
 !macroend
 !define Chocolatey `"" Chocolatey ""`
 
-
-
 /**
  * Names
  */
@@ -157,8 +151,6 @@ Var InstallerMode
 Var InstallerModeCaption
 Name "${PRODUCT_NAME_FULL}"
 Caption "${PRODUCT_NAME_FULL} ${PRODUCT_VERSION} $InstallerModeCaption"
-
-
 
 /**
  * Interface Configuration
@@ -174,18 +166,14 @@ Caption "${PRODUCT_NAME_FULL} ${PRODUCT_VERSION} $InstallerModeCaption"
 
 !define MUI_CUSTOMFUNCTION_GUIINIT onGUIInit
 
-
-
 /**
  * Language Selection Dialog Settings
  *
- * This enables the remeber of the previously choosen language.
+ * This enables the remember of the previously chosen language.
  */
 !define MUI_LANGDLL_REGISTRY_ROOT ${REG_UNINST_ROOT}
 !define MUI_LANGDLL_REGISTRY_KEY "${REG_UNINST_KEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "NSIS:Language"
-
-
 
 /**
  * Installer Pages
@@ -206,13 +194,9 @@ Caption "${PRODUCT_NAME_FULL} ${PRODUCT_VERSION} $InstallerModeCaption"
 !define MUI_PAGE_HEADER_SUBTEXT "Please review the license terms before installing sudo."
 !define MUI_PAGE_CUSTOMFUNCTION_PRE sudoLicPre
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE sudoLicLeave
-!insertmacro MUI_PAGE_LICENSE "..\.gotmp\bin\windows_amd64\sudo_license.txt"
+!insertmacro MUI_PAGE_LICENSE "..\.gotmp\bin\windows_${TARGET_ARCH}\sudo_license.txt"
 
 ; Components page
-!ifdef DOCKER_NSH
-  Var DockerVisible
-  Var DockerSelected
-!endif
 Var MkcertSetup
 !define MUI_PAGE_CUSTOMFUNCTION_PRE ComponentsPre
 !insertmacro MUI_PAGE_COMPONENTS
@@ -222,14 +206,7 @@ Var MkcertSetup
 !define MUI_PAGE_HEADER_SUBTEXT "Please review the license terms before installing mkcert."
 !define MUI_PAGE_CUSTOMFUNCTION_PRE mkcertLicPre
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE mkcertLicLeave
-!insertmacro MUI_PAGE_LICENSE "..\.gotmp\bin\windows_amd64\mkcert_license.txt"
-
-; License page WinNFSd
-!define MUI_PAGE_HEADER_TEXT "License Agreement for WinNFSd"
-!define MUI_PAGE_HEADER_SUBTEXT "Please review the license terms before installing WinNFSd."
-!define MUI_PAGE_CUSTOMFUNCTION_PRE winNFSdLicPre
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE winNFSdLicLeave
-!insertmacro MUI_PAGE_LICENSE "..\.gotmp\bin\windows_amd64\winnfsd_license.txt"
+!insertmacro MUI_PAGE_LICENSE "..\.gotmp\bin\windows_${TARGET_ARCH}\mkcert_license.txt"
 
 ; Directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
@@ -254,8 +231,6 @@ Var ICONS_GROUP
 !define MUI_FINISHPAGE_LINK_LOCATION ${PRODUCT_PROJECT_URL}
 !insertmacro MUI_PAGE_FINISH
 
-
-
 /**
  * Uninstaller Pages
  *
@@ -266,8 +241,6 @@ Var ICONS_GROUP
 ; Instfiles page
 !insertmacro MUI_UNPAGE_INSTFILES
 
-
-
 /**
  * Language Files
  *
@@ -276,8 +249,6 @@ Var ICONS_GROUP
  * `Language Strings`.
  */
 !insertmacro MUI_LANGUAGE "English"
-
-
 
 /**
  * Reserve Files
@@ -289,38 +260,6 @@ Var ICONS_GROUP
 ReserveFile /plugin EnVar.dll
 ReserveFile /plugin nsExec.dll
 ReserveFile /plugin INetC.dll
-
-
-
-/**
- * Version Information
- *
- * To use version information the VERSION constant has to be splitted into
- * the 4 version parts.
- */
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "${PRODUCT_NAME_FULL}"
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "Comments" "A test comment"
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "${PRODUCT_PUBLISHER}"
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalTrademarks" "Test Application is a trademark of Fake company"
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "https://github.com/drud/ddev/raw/master/LICENSE"
-;VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "Windows Installer of ${PRODUCT_NAME_FULL}"
-;ProductName
-;Comments
-;CompanyName
-;LegalCopyright
-;FileDescription
-;FileVersion
-;ProductVersion
-;InternalName
-;LegalTrademarks
-;OriginalFilename
-;PrivateBuild
-;SpecialBuild
-;StrCpy
-;VIProductVersion 1.2.3.4
-;VIFileVersion 1.2.3.4
-
-
 
 /**
  * Installer Sections
@@ -342,9 +281,9 @@ SectionGroup /e "${PRODUCT_NAME_FULL}"
 
     ; Important to enable downgrades from non stable
     SetOverwrite on
-    
+
     ; Copy files
-    File "..\.gotmp\bin\windows_amd64\ddev.exe"
+    File "..\.gotmp\bin\windows_${TARGET_ARCH}\ddev.exe"
     File /oname=license.txt "..\LICENSE"
 
     ; Install icons
@@ -404,56 +343,150 @@ SectionGroup /e "${PRODUCT_NAME_FULL}"
 SectionGroupEnd
 
 /**
- * Docker download and install
+ * gsudo application install
  */
-!ifdef DOCKER_NSH
-Section /o "${DOCKER_DESKTOP_NAME}" SecDocker
-  ; Set URL and temporary file name
-  !define DOCKER_DESKTOP_INSTALLER "$TEMP\${DOCKER_DESKTOP_SETUP}"
 
-  ; Download installer
-  INetC::get /CANCELTEXT "Skip download" /QUESTION "" "${DOCKER_DESKTOP_URL}" "${DOCKER_DESKTOP_INSTALLER}" /END
-  Pop $R0 ; return value = exit code, "OK" if OK
-
-  ; Check download result
-  ${If} $R0 = "OK"
-    ; Execute installer
-    ExecWait '"${DOCKER_DESKTOP_INSTALLER}"' $R0
-
-    ; Delete installer
-    Delete "${DOCKER_DESKTOP_INSTALLER}"
-
-    ${If} $R0 != 0
-      ; Installation failed, show message and continue
-      SetDetailsView show
-      DetailPrint "Installation of `${DOCKER_DESKTOP_NAME}` failed:"
-      DetailPrint " $R0"
-      MessageBox MB_ICONEXCLAMATION|MB_OK "Installation of `${DOCKER_DESKTOP_NAME}` has failed, please download and install once this installation has finished. Continue the resting installation."
-    ${EndIf}
-  ${Else}
-    ; Download failed, show message and continue
-    SetDetailsView show
-    DetailPrint "Download of `${DOCKER_DESKTOP_NAME}` failed:"
-    DetailPrint " $R0"
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Download of `${DOCKER_DESKTOP_NAME}` has failed, please download and install once this installation has finished. Continue the resting installation."
-  ${EndIf}
-
-  !undef DOCKER_DESKTOP_INSTALLER
-SectionEnd
-!endif ; DOCKER_NSH
-
-/**
- * sudo application install
- */
-Section "sudo" SecSudo
+Section "${GSUDO_NAME}" SecSudo
   ; Force installation
-  SectionIn 1 2 3 RO
+  SectionIn 1 2 3
   SetOutPath "$INSTDIR"
   SetOverwrite try
 
-  ; Copy files
-  File "..\.gotmp\bin\windows_amd64\sudo.exe"
-  File "..\.gotmp\bin\windows_amd64\sudo_license.txt"
+  ; Set URL and temporary file name
+  !define GSUDO_ZIP_DEST "$PLUGINSDIR\gsudo.portable.zip"
+  !define GSUDO_EXE_DEST "$INSTDIR\gsudo.exe"
+  !define GSUDO_LICENSE_URL "https://github.com/gerardog/gsudo/blob/master/LICENSE.txt"
+  !define GSUDO_LICENSE_DEST "$INSTDIR\gsudo_license.txt"
+  !define GSUDO_SHA256_URL "https://github.com/gerardog/gsudo/releases/download/${GSUDO_VERSION}/gsudo.portable.zip.sha256"
+  !define GSUDO_SHA256_DEST "$PLUGINSDIR\gsudo.portable.zip.sha256"
+
+  ; Download license file
+  INetC::get /CANCELTEXT "Skip download" /QUESTION "" "${GSUDO_LICENSE_URL}" "${GSUDO_LICENSE_DEST}" /END
+  Pop $R0 ; return value = exit code, "OK" if OK
+
+  ; Check download result
+  ${If} $R0 != "OK"
+    ; Download failed, show message and continue
+    SetDetailsView show
+    DetailPrint "Download of `${GSUDO_NAME}` license file failed:"
+    DetailPrint " $R0"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Download of `${GSUDO_NAME}` license file has failed, please download it to the DDEV installation folder `$INSTDIR` once this installation has finished. Continue with the rest of the installation."
+  ${EndIf}
+
+  ; Download zip file
+  INetC::get /CANCELTEXT "Skip download" /QUESTION "" "https://github.com/gerardog/gsudo/releases/download/${GSUDO_VERSION}/gsudo.portable.zip" "${GSUDO_ZIP_DEST}" /END
+  Pop $R0 ; return value = exit code, "OK" if OK
+
+  ; Check download result
+  ${If} $R0 != "OK"
+    ; Download failed, show message and continue
+    SetDetailsView show
+    DetailPrint "Download of `https://github.com/gerardog/gsudo/releases/download/${GSUDO_VERSION}/gsudo.portable.zip` to ${GSUDO_ZIP_DEST} failed: $R0"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Download of `${GSUDO_NAME}` zip file has failed, please download it to the DDEV installation folder `$INSTDIR` once this installation has finished. Continue with the rest of the installation."
+  ${Else}
+    ; Download SHA-256 hash
+    INetC::get /CANCELTEXT "Skip download" /QUESTION "" "${GSUDO_SHA256_URL}" "${GSUDO_SHA256_DEST}" /END
+    Pop $R0 ; return value = exit code, "OK" if OK
+
+    ; Check download result
+    ${If} $R0 != "OK"
+      ; Download failed, show message and continue
+      SetDetailsView show
+      DetailPrint "Download of `${GSUDO_NAME}` SHA-256 hash failed:"
+      DetailPrint " $R0"
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Download of `${GSUDO_NAME}` SHA-256 hash has failed. Continue with the rest of the installation."
+    ${Else}
+      ; Calculate SHA-256 hash of the downloaded file
+      ExecDos::exec /TOSTACK 'certutil -hashfile "${GSUDO_ZIP_DEST}" SHA256'
+      Pop $R0 ; exit code
+      Pop $R1 ; stdout
+      Pop $R2 ; stderr
+
+      DetailPrint "R0 exit code='$R0'"
+      DetailPrint "R1 stdout='$R1'"
+      DetailPrint "R2 stderr='$R2'"
+
+      ; Copy the hash (R2) into $R9
+      StrCpy $R9 $R2
+
+      DetailPrint "R9 hash='$R9'"
+
+      ; Check calculation result
+      ${If} $R0 != "0"
+        ; Calculation failed, show message and continue
+        SetDetailsView show
+        DetailPrint "Calculation of `${GSUDO_NAME}` SHA-256 hash failed:"
+        DetailPrint " $R1"
+        MessageBox MB_ICONEXCLAMATION|MB_OK "Calculation of `${GSUDO_NAME}` SHA-256 hash has failed. Continue with the rest of the installation."
+      ${Else}
+        ; Open SHA-256 hash file
+        FileOpen $2 "${GSUDO_SHA256_DEST}" "r"
+
+        ; Check if file was opened successfully
+        ${If} $2 == ""
+          ; File could not be opened, show message and continue
+          SetDetailsView show
+          DetailPrint "Could not open `${GSUDO_NAME}` SHA-256 hash file:"
+          DetailPrint " ${GSUDO_SHA256_DEST}"
+          MessageBox MB_ICONEXCLAMATION|MB_OK "Could not open `${GSUDO_NAME}` SHA-256 hash file. Continue with the rest of the installation."
+        ${Else}
+          ; Read expected hash from file
+          FileRead $2 $R8
+          FileClose $2
+
+          ; Get rid of newline on end of expected from file
+          push $R8
+          Call trim
+          pop $R8
+
+          DetailPrint "actualHash=R9=$R9"
+          DetailPrint "expectedHash=R8=$R8"
+          SetDetailsView show
+          ; Compare calculated hash with expected hash
+          ${If} $R9 != $R8
+            ; Hashes do not match, show message and continue
+            SetDetailsView show
+            DetailPrint "SHA-256 hash of `${GSUDO_NAME}` does not match expected hash:"
+            DetailPrint " actual: '$R9'"
+            DetailPrint " expect: '$R8'"
+            MessageBox MB_ICONEXCLAMATION|MB_OK "SHA-256 hash of `${GSUDO_NAME}` does not match expected hash. Continue with the rest of the installation."
+          ${Else}
+            ; Extract gsudo.exe from the zip file
+
+            ; Extract the ZIP file
+            ${If} ${TARGET_ARCH} == "arm64"
+              StrCpy $GsudoExtractionSourceDir "arm64"
+            ${Else}
+              StrCpy $GsudoExtractionSourceDir "x64"
+            ${EndIf}
+            DetailPrint "extracting the file $GsudoExtractionSourceDir/gsudo.exe from ${GSUDO_ZIP_DEST} to ${GSUDO_EXE_DEST} "
+
+            nsisunz::UnzipToLog /file "$GsudoExtractionSourceDir/gsudo.exe" "${GSUDO_ZIP_DEST}" "$PLUGINSDIR"
+
+            Pop $0
+            DetailPrint "Unzip results: $0"
+
+            ${If} $0 != "success"
+                ; Handle extraction failure
+                MessageBox MB_OK|MB_ICONSTOP "Failed to extract gsudo.exe from the zip archive. Error code: $0"
+            ${EndIf}
+
+            DetailPrint "CopyFiles $PLUGINSDIR\$GsudoExtractionSourceDir\gsudo.exe ${GSUDO_EXE_DEST}"
+            CopyFiles   "$PLUGINSDIR\$GsudoExtractionSourceDir\gsudo.exe" "${GSUDO_EXE_DEST}"
+
+            ; Since temp files were extracted in $PLUGINSDIR they automatically get cleaned up
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  !undef GSUDO_ZIP_DEST
+  !undef GSUDO_EXE_DEST
+  !undef GSUDO_LICENSE_URL
+  !undef GSUDO_LICENSE_DEST
+  !undef GSUDO_SHA256_URL
+  !undef GSUDO_SHA256_DEST
 SectionEnd
 
 /**
@@ -471,8 +504,8 @@ SectionGroup /e "mkcert"
       SetOverwrite try
 
       ; Copy files
-      File "..\.gotmp\bin\windows_amd64\mkcert.exe"
-      File "..\.gotmp\bin\windows_amd64\mkcert_license.txt"
+      File "..\.gotmp\bin\windows_${TARGET_ARCH}\mkcert.exe"
+      File "..\.gotmp\bin\windows_${TARGET_ARCH}\mkcert_license.txt"
 
       ; Install icons
       SetOutPath "$INSTDIR\Icons"
@@ -514,40 +547,6 @@ SectionGroup /e "mkcert"
 SectionGroupEnd
 
 /**
- * WinNFSd group
- */
-SectionGroup /e "WinNFSd"
-  /**
-   * WinNFSd application install
-   */
-  Section "WinNFSd" SecWinNFSd
-    SectionIn 1
-    SetOutPath "$INSTDIR"
-    SetOverwrite try
-
-    ; Copy files
-    File "..\.gotmp\bin\windows_amd64\winnfsd.exe"
-    File "..\.gotmp\bin\windows_amd64\winnfsd_license.txt"
-    File "..\scripts\windows_ddev_nfs_setup.sh"
-  SectionEnd
-
-  /**
-   * NSSM application install
-   */
-  Section "NSSM" SecNSSM
-    ; Install in non choco mode only
-    ${IfNot} ${Chocolatey}
-      SectionIn 1
-      SetOutPath "$INSTDIR"
-      SetOverwrite try
-
-      ; Copy files
-      File "..\.gotmp\bin\windows_amd64\nssm.exe"
-    ${EndIf}
-  SectionEnd
-SectionGroupEnd
-
-/**
  * Last processed section
  *
  * Insert new section groups and sections before this point!
@@ -556,7 +555,7 @@ Section -Post
   ; Write the uninstaller
   WriteUninstaller "$INSTDIR\ddev_uninstall.exe"
 
-  ; Remeber install directory for updates
+  ; Remember install directory for updates
   WriteRegStr ${REG_INSTDIR_ROOT} "${REG_INSTDIR_KEY}" "" "$INSTDIR\ddev.exe"
   WriteRegStr ${REG_INSTDIR_ROOT} "${REG_INSTDIR_KEY}" "Path" "$INSTDIR"
 
@@ -584,8 +583,6 @@ Section -Post
   !insertmacro MUI_STARTMENU_WRITE_END
 SectionEnd
 
-
-
 /**
  * Language Strings
  *
@@ -593,36 +590,22 @@ SectionEnd
  */
 LangString DESC_SecDDEV ${LANG_ENGLISH} "Install ${PRODUCT_NAME_FULL} (required)"
 LangString DESC_SecAddToPath ${LANG_ENGLISH} "Add the ${PRODUCT_NAME} (and sudo) directory to the global PATH"
-!ifdef DOCKER_NSH
-LangString DESC_SecDocker ${LANG_ENGLISH} "Download and install ${DOCKER_DESKTOP_NAME} (www.docker.com) which do not seem to be installed, but is required for $(^Name) to function"
-!endif ; DOCKER_NSH
-LangString DESC_SecSudo ${LANG_ENGLISH} "Sudo for Windows (github.com/ mattn/sudo) allows for elevated privileges which are used to add hostnames to the Windows hosts file (required)"
-LangString DESC_SecMkcert ${LANG_ENGLISH} "mkcert (github.com/ FiloSottile/mkcert) is a simple tool for making locally-trusted development certificates. It requires no configuration"
+LangString DESC_SecSudo ${LANG_ENGLISH} "Sudo for Windows (github.com/gerardog/gsudo) allows for elevated privileges which are used to add hostnames to the Windows hosts file"
+LangString DESC_SecMkcert ${LANG_ENGLISH} "mkcert (github.com/FiloSottile/mkcert) is a simple tool for making locally-trusted development certificates. It requires no configuration"
 LangString DESC_SecMkcertSetup ${LANG_ENGLISH} "Run `mkcert -install` to setup a local CA"
-LangString DESC_SecWinNFSd ${LANG_ENGLISH} "WinNFSd (github.com/ winnfsd/winnfsd) is an optional NFS server that can be used with ${PRODUCT_NAME_FULL}"
-LangString DESC_SecNSSM ${LANG_ENGLISH} "NSSM (nssm.cc) is used to install services, specifically WinNFSd for NFS"
-
-
 
 /**
  * Section Descriptions
  *
- * Assign a decription to each section
+ * Assign a description to each section
  */
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDDEV} $(DESC_SecDDEV)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAddToPath} $(DESC_SecAddToPath)
-  !ifdef DOCKER_NSH
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecDocker} $(DESC_SecDocker)
-  !endif ; DOCKER_NSH
   !insertmacro MUI_DESCRIPTION_TEXT ${SecSudo} $(DESC_SecSudo)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMkcert} $(DESC_SecMkcert)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMkcertSetup} $(DESC_SecMkcertSetup)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecWinNFSd} $(DESC_SecWinNFSd)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecNSSM} $(DESC_SecNSSM)
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
-
-
 
 /**
  * Installer Macros
@@ -641,24 +624,56 @@ LangString DESC_SecNSSM ${LANG_ENGLISH} "NSSM (nssm.cc) is used to install servi
 !macroend
 !define IsUpdateMode `"" IsUpdateMode ""`
 
-
-
 /**
  * Installer Functions
  *
  * Place functions used in the installer here. Function names must not start
  * with `un.`
  */
+Function GetOSArch
+    ; Get TARGET_ARCH into a variable from the argument/define
+    StrCpy $TARGET_ARCH ${TARGET_ARCH}
+
+    ; First, check the PROCESSOR_ARCHITEW6432 environment variable (used in 32-bit processes on 64-bit systems)
+    ReadEnvStr $INSTALL_ARCH "PROCESSOR_ARCHITEW6432"
+
+    ${If} $INSTALL_ARCH == ""
+        ; If PROCESSOR_ARCHITEW6432 is not set, fall back to PROCESSOR_ARCHITECTURE
+        ReadEnvStr $INSTALL_ARCH "PROCESSOR_ARCHITECTURE"
+    ${EndIf}
+
+    ; Check for common architectures
+    ${If} $INSTALL_ARCH == "AMD64"
+        StrCpy $INSTALL_ARCH "amd64"
+    ${ElseIf} $INSTALL_ARCH == "ARM64"
+        StrCpy $INSTALL_ARCH "arm64"
+    ${Else}
+        StrCpy $INSTALL_ARCH "unknown"
+    ${EndIf}
+FunctionEnd
+
+
 
 /**
  * Initialization, called on installer start
  */
 Function .onInit
-  ; Check OS architecture, 64 bit supported only
-  ${IfNot} ${IsNativeAMD64}
-    MessageBox MB_ICONSTOP|MB_OK "Unsupported CPU architecture, $(^Name) runs on 64 bit only."
+  ; Check OS architecture
+  Call GetOSArch
+
+  ; Compare detected architecture ($ARCH) with the target architecture ($NSIS_ARCH)
+  ${If} $INSTALL_ARCH != $TARGET_ARCH
+    MessageBox MB_ICONSTOP|MB_OK "Unsupported CPU architecture: $INSTALL_ARCH . This installer is built for ${TARGET_ARCH}."
     Abort "Unsupported CPU architecture!"
   ${EndIf}
+
+  ; Check Windows version
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_ICONSTOP|MB_OK "Unsupported Windows version, $(^Name) requires Windows 10 or later."
+    Abort "Unsupported Windows version!"
+  ${EndIf}
+
+  InitPluginsDir
 
   ; Switch to 64 bit view and disable FS redirection
   SetRegView 64
@@ -670,7 +685,7 @@ Function .onInit
   ; Load last $INSTDIR for upgrades. InstallDirRegKey does not work because of
   ; the usage of SetRegView 64
   ReadRegStr $R0 ${REG_INSTDIR_ROOT} "${REG_INSTDIR_KEY}" "Path"
-  
+
   ${If} ${Errors}
     ; Backward compatibility with older installers
     ReadRegStr $R0 ${REG_INSTDIR_ROOT} "${REG_INSTDIR_KEY}" ""
@@ -695,10 +710,6 @@ Function .onInit
   ${EndIf}
 
   ; Initialize global variables
-  !ifdef DOCKER_NSH
-  StrCpy $DockerVisible ""
-  StrCpy $DockerSelected ""
-  !endif ; DOCKER_NSH
   StrCpy $mkcertSetup ""
 
   ; Check parameters
@@ -710,17 +721,13 @@ Function .onInit
   ${Else}
     StrCpy $ChocolateyMode "0"
   ${EndIf}
+
 FunctionEnd
 
 /**
  * GUI initialization, called before window is shown
  */
 Function onGUIInit
-  ; Check for docker-compose
-  !ifdef DOCKER_NSH
-  Call checkDocker
-  !endif ; DOCKER_NSH
-
   ; Read setup status from registry
   ${IfNot} ${Silent}
     ReadRegDWORD $mkcertSetup ${REG_UNINST_ROOT} "${REG_UNINST_KEY}" "NSIS:mkcertSetup"
@@ -735,13 +742,6 @@ FunctionEnd
 Function .onSelChange
   ; Apply special selections on install type change
   ${If} $0 = -1
-    !ifdef DOCKER_NSH
-    ${If} $DockerVisible == 1
-    ${AndIf} $DockerSelected == 1
-      !insertmacro SelectSection ${SecDocker}
-    ${EndIf}
-    !endif ; DOCKER_NSH
-
     ${If} $mkcertSetup != 1
     ${AndIf} ${SectionIsSelected} ${SecMkcert}
     ${AndIfNot} ${Silent}
@@ -768,14 +768,6 @@ FunctionEnd
  * Disable not applicable sections
  */
 Function ComponentsPre
-  !ifdef DOCKER_NSH
-  ${If} $DockerVisible != 1
-    !insertmacro RemoveSection ${SecDocker}
-  ${ElseIf} $DockerSelected == 1
-    !insertmacro SelectSection ${SecDocker}
-  ${EndIf}
-  !endif ; DOCKER_NSH
-
   ${If} $mkcertSetup != 1
   ${AndIf} ${SectionIsSelected} ${SecMkcert}
   ${AndIfNot} ${Silent}
@@ -838,24 +830,6 @@ Function mkcertLicLeave
 FunctionEnd
 
 /**
- * Disable WinNFSd license page if component is not selected or already accepted before
- */
-Function winNFSdLicPre
-  ReadRegDWORD $R0 ${REG_UNINST_ROOT} "${REG_UNINST_KEY}" "NSIS:WinNFSdLicenseAccepted"
-  ${If} $R0 = 1
-  ${OrIfNot} ${SectionIsSelected} ${SecWinNFSd}
-    Abort
-  ${EndIf}
-FunctionEnd
-
-/**
- * Set WinNFSd license accepted flag
- */
-Function winNFSdLicLeave
-  WriteRegDWORD ${REG_UNINST_ROOT} "${REG_UNINST_KEY}" "NSIS:WinNFSdLicenseAccepted" 0x00000001
-FunctionEnd
-
-/**
  * Disable on updates
  */
 Function DirectoryPre
@@ -873,57 +847,42 @@ Function StartMenuPre
   ${EndIf}
 FunctionEnd
 
-/**
- * Check for docker-compose
- */
-!ifdef DOCKER_NSH
-Function checkDocker
-  ${IfNot} ${Silent}
-    Var /GLOBAL DockerIgnore
+; Trim
+;   Removes leading & trailing whitespace from a string
+; Usage:
+;   Push
+;   Call Trim
+;   Pop
+Function Trim
+	Exch $R1 ; Original string
+	Push $R2
 
-    ; Read setup status from registry
-    ReadRegDWORD $DockerIgnore ${REG_UNINST_ROOT} "${REG_UNINST_KEY}" "NSIS:DockerIgnore"
+Loop:
+	StrCpy $R2 "$R1" 1
+	StrCmp "$R2" " " TrimLeft
+	StrCmp "$R2" "$\r" TrimLeft
+	StrCmp "$R2" "$\n" TrimLeft
+	StrCmp "$R2" "$\t" TrimLeft
+	GoTo Loop2
+TrimLeft:
+	StrCpy $R1 "$R1" "" 1
+	Goto Loop
 
-    ; Check if ignore flag is set
-    ${If} $DockerIgnore != 1
-      ; Check if docker-compose is executable
-      ${IfNot} ${DockerComposeIsExecutable}
-        ; Check if docker is supported on this system
-        ${If} ${DockerDesktopIsInstallable}
-          ; Show Docker Desktop section
-          StrCpy $DockerVisible "1"
+Loop2:
+	StrCpy $R2 "$R1" 1 -1
+	StrCmp "$R2" " " TrimRight
+	StrCmp "$R2" "$\r" TrimRight
+	StrCmp "$R2" "$\n" TrimRight
+	StrCmp "$R2" "$\t" TrimRight
+	GoTo Done
+TrimRight:
+	StrCpy $R1 "$R1" -1
+	Goto Loop2
 
-          ; Check if docker is installed
-          ${IfNot} ${DockerDesktopIsInstalled}
-            MessageBox MB_ICONQUESTION|MB_YESNOCANCEL "`${DOCKER_DESKTOP_NAME}` is not installed, but it is required for $(^Name) to function. Would you like to download and install `${DOCKER_DESKTOP_NAME}` during this setup? Cancel will not show this message again." IDYES DockerDesktopSelect IDCANCEL CheckDockerIgnore
-          ${Else}
-            MessageBox MB_ICONINFORMATION|MB_OK "`${DOCKER_DESKTOP_NAME}` is installed but docker-compose is not available in variable `Path` ), but they are required for $(^Name) to function. Please install them after you complete $(^Name) installation."
-          ${EndIf}
-
-          Goto CheckDockerEnd
-
-        DockerDesktopSelect:
-          StrCpy $DockerSelected "1"
-        ${Else}
-          MessageBox MB_ICONQUESTION|MB_YESNOCANCEL "`${DOCKER_TOOLBOX_NAME}` is not installed, but it is required for $(^Name) to function. Would you like to go to the download page of `${DOCKER_TOOLBOX_NAME}`? Cancel will not show this message again." IDYES DockerToolboxDownload IDCANCEL CheckDockerIgnore
-          Goto CheckDockerEnd
-
-        DockerToolboxDownload:
-          ExecShell "open" "${DOCKER_TOOLBOX_URL}"
-        ${EndIf}
-
-        Goto CheckDockerEnd
-
-      CheckDockerIgnore:
-        WriteRegDWORD ${REG_UNINST_ROOT} "${REG_UNINST_KEY}" "NSIS:DockerIgnore" 1
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-  CheckDockerEnd:
+Done:
+	Pop $R2
+	Exch $R1
 FunctionEnd
-!endif ; DOCKER_NSH
-
-
 
 /**
  * Uninstaller Section
@@ -943,19 +902,13 @@ Section Uninstall
   ; Remove installed files
   Delete "$INSTDIR\ddev_uninstall.exe"
 
-  Delete "$INSTDIR\nssm.exe"
-
-  Delete "$INSTDIR\windows_ddev_nfs_setup.sh"
-  Delete "$INSTDIR\winnfsd_license.txt"
-  Delete "$INSTDIR\winnfsd.exe"
-
   Delete "$INSTDIR\mkcert uninstall.lnk"
   Delete "$INSTDIR\mkcert install.lnk"
   Delete "$INSTDIR\mkcert_license.txt"
   Delete "$INSTDIR\mkcert.exe"
 
   Delete "$INSTDIR\sudo_license.txt"
-  Delete "$INSTDIR\sudo.exe"
+  Delete "$INSTDIR\${GSUDO_SETUP}"
 
   Delete "$INSTDIR\license.txt"
   Delete "$INSTDIR\ddev.exe"
@@ -981,7 +934,6 @@ Section Uninstall
   ; Close uninstaller window
   SetAutoClose true
 SectionEnd
-
 
 
 /**

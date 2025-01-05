@@ -1,25 +1,27 @@
 package ddevapp_test
 
 import (
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/globalconfig"
-	"github.com/drud/ddev/pkg/testcommon"
-	"github.com/stretchr/testify/require"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestComposer does trivial tests of the ddev composer command
+// TestComposer does trivial tests of the DDEV Composer command
 // More tests are found in the cmd package
 func TestComposer(t *testing.T) {
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
+	origDir, _ := os.Getwd()
 
-	// Use drupal8 only for this test, just need a little composer action
-	site := FullTestSites[8]
+	// Use drupal11 only for this test, need a little Composer action
+	site := FullTestSites[16]
 	// If running this with GOTEST_SHORT we have to create the directory, tarball etc.
 	if site.Dir == "" || !fileutil.FileExists(site.Dir) {
 		app := &ddevapp.DdevApp{Name: site.Name}
@@ -28,31 +30,59 @@ func TestComposer(t *testing.T) {
 
 		err := site.Prepare()
 		require.NoError(t, err)
-		// nolint: errcheck
-		defer os.RemoveAll(site.Dir)
+		t.Cleanup(func() {
+			err = app.Stop(true, false)
+			assert.NoError(err)
+			err := os.Chdir(origDir)
+			assert.NoError(err)
+			_ = os.RemoveAll(app.AppRoot)
+		})
 	}
 
-	testDir, _ := os.Getwd()
-	// nolint: errcheck
-	defer os.Chdir(testDir)
 	_ = os.Chdir(site.Dir)
 
 	testcommon.ClearDockerEnv()
 	err := app.Init(site.Dir)
-	app.ComposerVersion = "2"
 	assert.NoError(err)
 	app.Hooks = map[string][]ddevapp.YAMLTask{"post-composer": {{"exec-host": "touch hello-post-composer-" + app.Name}}, "pre-composer": {{"exec-host": "touch hello-pre-composer-" + app.Name}}}
 	// Make sure we get rid of this for other uses
-	defer func() {
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
 		app.Hooks = nil
 		app.ComposerVersion = ""
 		_ = app.WriteConfig()
 		_ = app.Stop(true, false)
-	}()
+	})
+
 	err = app.Start()
 	require.NoError(t, err)
-	_, _, err = app.Composer([]string{"install"})
+
+	// Make sure to remove the var-dump-server to start; composer install should replace it.
+	_ = os.RemoveAll("vendor/bin/var-dump-server")
+
+	err = app.MutagenSyncFlush()
 	assert.NoError(err)
+
+	_, _, err = app.Composer([]string{"config", "--no-plugins", "allow-plugins", "true"})
+	require.NoError(t, err)
+	_, _, err = app.Composer([]string{"install", "--no-progress", "--no-interaction"})
+	require.NoError(t, err)
+	err = app.MutagenSyncFlush()
+	require.NoError(t, err)
+
+	out, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "ls -l vendor/bin/var-dump-server | awk '{print $1}'",
+	})
+	assert.NoError(err)
+	assert.True(strings.HasPrefix(out, "lrwx") || strings.HasPrefix(out, "-rwx"), "perms of var-dump-server should be 'lrwx' or '-rwx', got '%s' instead", out)
+
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
+		Cmd: "vendor/bin/var-dump-server -h",
+	})
+	assert.NoError(err)
+
 	assert.FileExists("hello-pre-composer-" + app.Name)
 	assert.FileExists("hello-post-composer-" + app.Name)
 	err = os.Remove("hello-pre-composer-" + app.Name)
@@ -68,7 +98,7 @@ func TestComposerVersion(t *testing.T) {
 
 	testDir := testcommon.CreateTmpDir(t.Name())
 
-	pwd, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 	err := os.Chdir(testDir)
 	assert.NoError(err)
 
@@ -78,22 +108,27 @@ func TestComposerVersion(t *testing.T) {
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.Chdir(pwd)
+		err = os.Chdir(origDir)
 		assert.NoError(err)
-		err = os.RemoveAll(testDir)
-		assert.NoError(err)
+		// Mutagen can compete with removal, so go ahead and ignore result
+		_ = os.RemoveAll(testDir)
 	})
 
-	// Make sure base version (default) is composer v1
+	_ = app.Stop(true, false)
+	app.Name = t.Name()
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	// Make sure base version (default) is Composer v2
 	err = app.Start()
 	require.NoError(t, err)
 	stdout, _, err := app.Exec(&ddevapp.ExecOpts{Cmd: "composer --version"})
 	assert.NoError(err)
-	assert.Contains(stdout, "Composer version 2")
+	assert.True(strings.HasPrefix(stdout, "Composer 2") || strings.HasPrefix(stdout, "Composer version 2"), "Composer version not the expected Composer 2: %v", stdout)
 
-	// Make sure it does the right thing with latest 2.x
+	// Make sure it does the right thing with 1.x
 	app.ComposerVersion = "1"
-	err = app.Start()
+	err = app.Restart()
 	require.NoError(t, err)
 	stdout, _, err = app.Exec(&ddevapp.ExecOpts{Cmd: "composer --version"})
 	assert.NoError(err)
@@ -101,15 +136,15 @@ func TestComposerVersion(t *testing.T) {
 
 	// With version "2" we should be back to latest v2
 	app.ComposerVersion = "2"
-	err = app.Start()
+	err = app.Restart()
 	require.NoError(t, err)
 	stdout, _, err = app.Exec(&ddevapp.ExecOpts{Cmd: "composer --version"})
 	assert.NoError(err)
-	assert.Contains(stdout, "Composer version 2")
+	assert.True(strings.HasPrefix(stdout, "Composer 2") || strings.HasPrefix(stdout, "Composer version 2"), "Composer version doesn't start with the expected value: %v", stdout)
 
 	// With explicit version, we should get that version
 	app.ComposerVersion = "2.0.1"
-	err = app.Start()
+	err = app.Restart()
 	require.NoError(t, err)
 	stdout, _, err = app.Exec(&ddevapp.ExecOpts{Cmd: "composer --version"})
 	assert.NoError(err)

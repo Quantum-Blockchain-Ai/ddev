@@ -3,28 +3,39 @@ package ddevapp_test
 import (
 	"bufio"
 	"fmt"
-	"github.com/drud/ddev/pkg/exec"
-	"github.com/drud/ddev/pkg/nodeps"
-	"github.com/mitchellh/go-homedir"
-	"github.com/stretchr/testify/require"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	. "github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/fileutil"
-	"github.com/drud/ddev/pkg/testcommon"
-	"github.com/drud/ddev/pkg/util"
-	"github.com/drud/ddev/pkg/version"
-	"github.com/google/uuid"
+	dockerTypes "github.com/docker/docker/api/types"
+	copy2 "github.com/otiai10/copy"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/docker"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	asrt "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// isSemver returns true if a string is a semantic version.
+func isSemver(s string) bool {
+	_, err := semver.NewVersion(s)
+	return err == nil
+}
 
 // TestNewConfig tests functionality around creating a new config, writing it to disk, and reading the resulting config.
 func TestNewConfig(t *testing.T) {
@@ -32,25 +43,23 @@ func TestNewConfig(t *testing.T) {
 	// Create a temporary directory and change to it for the duration of this test.
 	testDir := testcommon.CreateTmpDir(t.Name())
 
-	pwd, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
 	// Load a new Config
-	app, err := NewApp(testDir, true)
+	app, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
 
 	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.RemoveAll(testDir)
-		assert.NoError(err)
-		err = os.Chdir(pwd)
-		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
 	})
 
 	// Ensure the config uses specified defaults.
-	assert.Equal(app.GetDBImage(), version.GetDBImage(nodeps.MariaDB))
-	assert.Equal(app.WebImage, version.GetWebImage())
-	assert.Equal(app.DBAImage, version.GetDBAImage())
+	assert.Equal(app.GetDBImage(), docker.GetDBImage(nodeps.MariaDB, ""))
+	assert.Equal(app.WebImage, docker.GetWebImage())
 	app.Name = util.RandString(32)
 	app.Type = nodeps.AppTypeDrupal8
 
@@ -60,7 +69,7 @@ func TestNewConfig(t *testing.T) {
 	_, err = os.Stat(app.ConfigPath)
 	assert.NoError(err)
 
-	loadedConfig, err := NewApp(testDir, true)
+	loadedConfig, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
 	assert.Equal(app.Name, loadedConfig.Name)
 	assert.Equal(app.Type, loadedConfig.Type)
@@ -70,26 +79,26 @@ func TestNewConfig(t *testing.T) {
 func TestDisasterConfig(t *testing.T) {
 	assert := asrt.New(t)
 
-	pwd, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
 	// Make sure we're not allowed to config in home directory.
-	tmpDir, _ := homedir.Dir()
-	_, err := NewApp(tmpDir, false)
+	tmpDir, _ := os.UserHomeDir()
+	_, err := ddevapp.NewApp(tmpDir, false)
 	assert.Error(err)
 	assert.Contains(err.Error(), "ddev config is not useful")
-	_ = os.Chdir(pwd)
+	_ = os.Chdir(origDir)
 
 	// Create a temporary directory and change to it for the duration of this test.
 	tmpDir = testcommon.CreateTmpDir(t.Name())
 
 	// Load a new Config
-	app, err := NewApp(tmpDir, false)
+	app, err := ddevapp.NewApp(tmpDir, false)
 	assert.NoError(err)
 
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.Chdir(pwd)
+		err = os.Chdir(origDir)
 		assert.NoError(err)
 		_ = os.RemoveAll(tmpDir)
 	})
@@ -105,38 +114,44 @@ func TestDisasterConfig(t *testing.T) {
 	assert.NoError(err)
 	err = os.Chdir(subdir)
 	assert.NoError(err)
-	subdirApp, err := NewApp(subdir, false)
+	subdirApp, err := ddevapp.NewApp(subdir, false)
 	assert.NoError(err)
 	_ = subdirApp
 
 }
 
-// TestAllowedAppType tests the IsAllowedAppType function.
+// TestAllowedAppType tests the IsValidAppType function.
 func TestAllowedAppTypes(t *testing.T) {
 	assert := asrt.New(t)
-	for _, v := range GetValidAppTypes() {
-		assert.True(IsValidAppType(v))
+	for _, v := range ddevapp.GetValidAppTypes() {
+		assert.True(ddevapp.IsValidAppType(v))
 	}
 
 	for i := 1; i <= 50; i++ {
 		randomType := util.RandString(32)
-		assert.False(IsValidAppType(randomType))
+		assert.False(ddevapp.IsValidAppType(randomType))
 	}
 }
 
 // TestPrepDirectory ensures the configuration directory can be created with the correct permissions.
 func TestPrepDirectory(t *testing.T) {
 	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
 	// Create a temporary directory and change to it for the duration of this test.
 	testDir := testcommon.CreateTmpDir("TestPrepDirectory")
-	defer testcommon.CleanupDir(testDir)
-	defer testcommon.Chdir(testDir)()
+	err := os.Chdir(testDir)
+	require.NoError(t, err)
 
-	app, err := NewApp(testDir, true)
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+	app, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
 
 	// Prep the directory.
-	err = PrepDdevDirectory(filepath.Dir(app.ConfigPath))
+	err = ddevapp.PrepDdevDirectory(app)
 	assert.NoError(err)
 
 	// Read directory info an ensure it exists.
@@ -147,11 +162,19 @@ func TestPrepDirectory(t *testing.T) {
 // TestHostName tests that the TestSite.Hostname() field returns the hostname as expected.
 func TestHostName(t *testing.T) {
 	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
 	testDir := testcommon.CreateTmpDir("TestHostName")
-	defer testcommon.CleanupDir(testDir)
-	defer testcommon.Chdir(testDir)()
-	app, err := NewApp(testDir, true)
+	err := os.Chdir(testDir)
+	require.NoError(t, err)
+	app, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
 	app.Name = util.RandString(32)
 
 	assert.Equal(app.GetHostname(), strings.ToLower(app.Name+"."+app.ProjectTLD))
@@ -161,30 +184,29 @@ func TestHostName(t *testing.T) {
 func TestWriteDockerComposeYaml(t *testing.T) {
 	// Set up tests and give ourselves a working directory.
 	assert := asrt.New(t)
-	pwd, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 	testDir := testcommon.CreateTmpDir(t.Name())
-	defer testcommon.CleanupDir(testDir)
-	defer testcommon.Chdir(testDir)()
 
-	app, err := NewApp(testDir, true)
+	app, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
 
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.Chdir(pwd)
+		err = os.Chdir(origDir)
 		assert.NoError(err)
 		_ = os.RemoveAll(testDir)
 	})
 
 	app.Name = util.RandString(32)
-	app.Type = GetValidAppTypes()[0]
+	app.Type = ddevapp.GetValidAppTypes()[0]
 
 	// WriteConfig a config to create/prep necessary directories.
 	err = app.WriteConfig()
 	assert.NoError(err)
 
 	// After the config has been written and directories exist, the write should work.
+	app.DockerEnv()
 	err = app.WriteDockerComposeYAML()
 	assert.NoError(err)
 
@@ -194,7 +216,7 @@ func TestWriteDockerComposeYaml(t *testing.T) {
 	assert.False(fileinfo.IsDir())
 	assert.Equal(fileinfo.Name(), filepath.Base(app.DockerComposeYAMLPath()))
 
-	composeBytes, err := ioutil.ReadFile(app.DockerComposeYAMLPath())
+	composeBytes, err := os.ReadFile(app.DockerComposeYAMLPath())
 	assert.NoError(err)
 	contentString := string(composeBytes)
 	assert.Contains(contentString, app.Type)
@@ -204,14 +226,14 @@ func TestWriteDockerComposeYaml(t *testing.T) {
 func TestConfigCommand(t *testing.T) {
 	// Set up tests and give ourselves a working directory.
 	assert := asrt.New(t)
-	pwd, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
 	const apptypePos = 0
 	const phpVersionPos = 1
 	testMatrix := map[string][]string{
-		"drupal6phpversion": {nodeps.AppTypeDrupal6, nodeps.PHP56},
-		"drupal7phpversion": {nodeps.AppTypeDrupal7, nodeps.PHPDefault},
-		"drupal8phpversion": {nodeps.AppTypeDrupal8, nodeps.PHPDefault},
+		"magentophpversion":  {nodeps.AppTypeMagento, nodeps.PHPDefault},
+		"drupal7phpversion":  {nodeps.AppTypeDrupal7, nodeps.PHP82},
+		"Drupal11phpversion": {nodeps.AppTypeDrupal11, nodeps.PHPDefault},
 	}
 
 	for testName, testValues := range testMatrix {
@@ -225,16 +247,15 @@ func TestConfigCommand(t *testing.T) {
 
 		// Create the ddevapp we'll use for testing.
 		// This will not return an error, since there is no existing configuration.
-		app, err := NewApp(testDir, true)
+		app, err := ddevapp.NewApp(testDir, true)
 		assert.NoError(err)
 
 		t.Cleanup(func() {
 			err = app.Stop(true, false)
 			assert.NoError(err)
-			err = os.Chdir(pwd)
+			err = os.Chdir(origDir)
 			assert.NoError(err)
-			err = os.RemoveAll(testDir)
-			assert.NoError(err)
+			_ = os.RemoveAll(testDir)
 		})
 		// Randomize some values to use for Stdin during testing.
 		name := strings.ToLower(util.RandString(16))
@@ -248,7 +269,7 @@ func TestConfigCommand(t *testing.T) {
 
 		restoreOutput := util.CaptureUserOut()
 		err = app.PromptForConfig()
-		assert.NoError(err, t)
+		require.Error(t, err, "invalid project type error should have been caught")
 		out := restoreOutput()
 
 		// Ensure we have expected vales in output.
@@ -274,114 +295,50 @@ func TestConfigCommand(t *testing.T) {
 		assert.Equal(name, app.Name)
 		assert.Equal(testValues[apptypePos], app.Type)
 		assert.Equal("docroot", app.Docroot)
-		assert.EqualValues(testValues[phpVersionPos], app.PHPVersion, "PHP value incorrect for app %v", app)
-		err = PrepDdevDirectory(testDir)
+		assert.EqualValues(testValues[phpVersionPos], app.PHPVersion, "PHP value incorrect for apptype %v (expected %s got %s) (%v)", app.Type, testValues[phpVersionPos], app.PHPVersion, app)
+		err = ddevapp.PrepDdevDirectory(app)
 		assert.NoError(err)
 	}
 }
 
-// TestConfigCommandInteractiveCreateDocrootDenied
-func TestConfigCommandInteractiveCreateDocrootDenied(t *testing.T) {
-	// Set up tests and give ourselves a working directory.
+// TestConfigCommandProjectNormalization tests behavior when normalizing project names.
+// For example, a directory like "some_dir" should result in project name "some-dir"
+func TestConfigCommandProjectNormalization(t *testing.T) {
 	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
 
-	noninteractiveEnv := "DDEV_NONINTERACTIVE"
-	// nolint: errcheck
-	defer os.Setenv(noninteractiveEnv, os.Getenv(noninteractiveEnv))
-	err := os.Unsetenv(noninteractiveEnv)
-	assert.NoError(err)
-
-	testMatrix := map[string][]string{
-		"drupal6phpversion": {nodeps.AppTypeDrupal6, nodeps.PHP56},
-		"drupal7phpversion": {nodeps.AppTypeDrupal7, nodeps.PHPDefault},
-		"drupal8phpversion": {nodeps.AppTypeDrupal8, nodeps.PHPDefault},
+	testMatrix := []struct {
+		name        string
+		expectation string
+	}{
+		{"normalname", "normalname"},
+		{"with-hyphen", "with-hyphen"},
+		{"with_underscore", "with-underscore"},
+		{"with.dot", "with.dot"},
 	}
 
-	for testName := range testMatrix {
-		testDir := testcommon.CreateTmpDir(t.Name() + testName)
+	for _, tc := range testMatrix {
+		t.Run(tc.name, func(t *testing.T) {
 
-		// testcommon.Chdir()() and CleanupDir() checks their own errors (and exit)
-		defer testcommon.CleanupDir(testDir)
-		defer testcommon.Chdir(testDir)()
+			baseTestDir := t.TempDir()
+			testDir := filepath.Join(baseTestDir, tc.name)
+			err := os.Mkdir(testDir, 0755)
+			require.NoError(t, err)
 
-		// Create the ddevapp we'll use for testing.
-		// This will not return an error, since there is no existing configuration.
-		app, err := NewApp(testDir, true)
-		assert.NoError(err)
+			// Create the app we'll use for testing.
+			app, err := ddevapp.NewApp(testDir, false)
+			require.NoError(t, err)
 
-		// Randomize some values to use for Stdin during testing.
-		name := uuid.New().String()
-		nonexistentDocroot := filepath.Join("does", "not", "exist")
+			require.Equal(t, tc.expectation, app.Name)
 
-		// Create an example input buffer that writes the sitename, a nonexistent document root,
-		// and a "no"
-		input := fmt.Sprintf("%s\n%s\nno", name, nonexistentDocroot)
-		scanner := bufio.NewScanner(strings.NewReader(input))
-		util.SetInputScanner(scanner)
+			t.Cleanup(func() {
+				_ = app.Stop(true, false)
+				_ = os.Chdir(origDir)
+			})
 
-		err = app.PromptForConfig()
-		assert.Error(err, t)
-
-		// Ensure we have expected vales in output.
-		assert.Contains(err.Error(), "docroot must exist to continue configuration")
-
-		err = PrepDdevDirectory(testDir)
-		assert.NoError(err)
-	}
-}
-
-// TestConfigCommandCreateDocrootAllowed
-func TestConfigCommandCreateDocrootAllowed(t *testing.T) {
-	// Set up tests and give ourselves a working directory.
-	assert := asrt.New(t)
-
-	const apptypePos = 0
-	const phpVersionPos = 1
-	testMatrix := map[string][]string{
-		"drupal6phpversion": {nodeps.AppTypeDrupal6, nodeps.PHP56},
-		"drupal7phpversion": {nodeps.AppTypeDrupal7, nodeps.PHPDefault},
-		"drupal8phpversion": {nodeps.AppTypeDrupal8, nodeps.PHPDefault},
-	}
-
-	for testName, testValues := range testMatrix {
-		testDir := testcommon.CreateTmpDir(t.Name() + testName)
-
-		// testcommon.Chdir()() and CleanupDir() checks their own errors (and exit)
-		defer testcommon.CleanupDir(testDir)
-		defer testcommon.Chdir(testDir)()
-
-		// Create the ddevapp we'll use for testing.
-		// This will not return an error, since there is no existing configuration.
-		app, err := NewApp(testDir, true)
-		assert.NoError(err)
-
-		// Randomize some values to use for Stdin during testing.
-		name := uuid.New().String()
-		nonexistentDocroot := filepath.Join("does", "not", "exist")
-
-		// Create an example input buffer that writes the sitename, a nonexistent document root,
-		// a "yes", and a valid apptype
-		input := fmt.Sprintf("%s\n%s\nyes\n%s", name, nonexistentDocroot, testValues[apptypePos])
-		scanner := bufio.NewScanner(strings.NewReader(input))
-		util.SetInputScanner(scanner)
-
-		restoreOutput := util.CaptureUserOut()
-		err = app.PromptForConfig()
-		assert.NoError(err, t)
-		out := restoreOutput()
-
-		// Ensure we have expected vales in output.
-		assert.Contains(out, nonexistentDocroot)
-		assert.Contains(out, "Created docroot")
-
-		// Ensure values were properly set on the app struct.
-		assert.Equal(name, app.Name)
-		assert.Equal(testValues[apptypePos], app.Type)
-		assert.Equal(nonexistentDocroot, app.Docroot)
-		assert.EqualValues(testValues[phpVersionPos], app.PHPVersion)
-
-		err = PrepDdevDirectory(testDir)
-		assert.NoError(err)
+			err = ddevapp.PrepDdevDirectory(app)
+			assert.NoError(err)
+		})
 	}
 }
 
@@ -389,28 +346,32 @@ func TestConfigCommandCreateDocrootAllowed(t *testing.T) {
 func TestConfigCommandDocrootDetection(t *testing.T) {
 	// Set up tests and give ourselves a working directory.
 	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
 
-	testMatrix := AvailableDocrootLocations()
+	testMatrix := ddevapp.AvailablePHPDocrootLocations()
 	for index, testDocrootName := range testMatrix {
-		testDir := testcommon.CreateTmpDir(fmt.Sprintf("TestConfigCommand_%v", index))
-
-		// testcommon.Chdir()() and CleanupDir() checks their own errors (and exit)
-		defer testcommon.CleanupDir(testDir)
-		defer testcommon.Chdir(testDir)()
+		tmpDir := testcommon.CreateTmpDir(fmt.Sprintf("TestConfigCommand_%v", index))
 
 		// Create a document root folder.
-		err := os.MkdirAll(filepath.Join(testDir, filepath.Join(testDocrootName)), 0755)
+		err := os.MkdirAll(filepath.Join(tmpDir, filepath.Join(testDocrootName)), 0755)
 		if err != nil {
-			t.Errorf("Could not create %s directory under %s", testDocrootName, testDir)
+			t.Errorf("Could not create %s directory under %s", testDocrootName, tmpDir)
 		}
-		_, err = os.OpenFile(filepath.Join(testDir, filepath.Join(testDocrootName), "index.php"), os.O_RDONLY|os.O_CREATE, 0664)
+		_, err = os.OpenFile(filepath.Join(tmpDir, filepath.Join(testDocrootName), "index.php"), os.O_RDONLY|os.O_CREATE, 0664)
 		assert.NoError(err)
 
 		// Create the ddevapp we'll use for testing.
 		// This will not return an error, since there is no existing configuration.
-		app, err := NewApp(testDir, true)
+		app, err := ddevapp.NewApp(tmpDir, true)
 		assert.NoError(err)
 
+		t.Cleanup(func() {
+			err = os.Chdir(origDir)
+			assert.NoError(err)
+			err = app.Stop(true, false)
+			assert.NoError(err)
+			_ = os.RemoveAll(tmpDir)
+		})
 		// Randomize some values to use for Stdin during testing.
 		name := strings.ToLower(util.RandString(16))
 
@@ -431,7 +392,7 @@ func TestConfigCommandDocrootDetection(t *testing.T) {
 		assert.Equal(name, app.Name)
 		assert.Equal(nodeps.AppTypeDrupal8, app.Type)
 		assert.Equal(testDocrootName, app.Docroot)
-		err = PrepDdevDirectory(testDir)
+		err = ddevapp.PrepDdevDirectory(app)
 		assert.NoError(err)
 	}
 }
@@ -443,11 +404,8 @@ func TestConfigCommandDocrootDetectionIndexVerification(t *testing.T) {
 	// Set up tests and give ourselves a working directory.
 	assert := asrt.New(t)
 
+	origDir, _ := os.Getwd()
 	testDir := testcommon.CreateTmpDir("TestConfigCommand_testDocrootIndex")
-
-	// testcommon.Chdir()() and CleanupDir() checks their own errors (and exit)
-	defer testcommon.CleanupDir(testDir)
-	defer testcommon.Chdir(testDir)()
 
 	// Create a document root folder.
 	err := os.MkdirAll(filepath.Join(testDir, filepath.Join("web")), 0755)
@@ -463,9 +421,16 @@ func TestConfigCommandDocrootDetectionIndexVerification(t *testing.T) {
 
 	// Create the ddevapp we'll use for testing.
 	// This will not return an error, since there is no existing configuration.
-	app, err := NewApp(testDir, true)
+	app, err := ddevapp.NewApp(testDir, true)
 	assert.NoError(err)
 
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
 	// Randomize some values to use for Stdin during testing.
 	name := strings.ToLower(util.RandString(16))
 
@@ -486,7 +451,7 @@ func TestConfigCommandDocrootDetectionIndexVerification(t *testing.T) {
 	assert.Equal(name, app.Name)
 	assert.Equal(nodeps.AppTypeDrupal8, app.Type)
 	assert.Equal("docroot", app.Docroot)
-	err = PrepDdevDirectory(testDir)
+	err = ddevapp.PrepDdevDirectory(app)
 	assert.NoError(err)
 }
 
@@ -495,16 +460,15 @@ func TestReadConfig(t *testing.T) {
 	assert := asrt.New(t)
 
 	// This closely resembles the values one would have from NewApp()
-	app := &DdevApp{
+	app := &ddevapp.DdevApp{
 		ConfigPath: filepath.Join("testdata", "config.yaml"),
 		AppRoot:    "testdata",
 		Name:       "TestRead",
 	}
 
 	_, err := app.ReadConfig(false)
-	if err != nil {
-		t.Fatalf("Unable to c.ReadConfig(), err: %v", err)
-	}
+	d, _ := os.Getwd()
+	require.NoError(t, err, "Unable to c.ReadConfig() in %s, err: %v", d, err)
 
 	// Values not defined in file, we should still have default values
 	assert.Equal(app.Name, "TestRead")
@@ -521,7 +485,7 @@ func TestReadConfigCRLF(t *testing.T) {
 	assert := asrt.New(t)
 
 	// This closely resembles the values one would have from NewApp()
-	app := &DdevApp{
+	app := &ddevapp.DdevApp{
 		ConfigPath: filepath.Join("testdata", t.Name(), ".ddev", "config.yaml"),
 		AppRoot:    filepath.Join("testdata", t.Name()),
 		Name:       t.Name(),
@@ -541,61 +505,172 @@ func TestReadConfigCRLF(t *testing.T) {
 
 // TestConfigValidate tests validation of configuration values.
 func TestConfigValidate(t *testing.T) {
+	if nodeps.IsAppleSilicon() || dockerutil.IsColima() || dockerutil.IsLima() {
+		t.Skip("Skipping on Apple Silicon/Lima/Colima, lots of network connections failed")
+	}
+
 	assert := asrt.New(t)
-
-	//pwd, err := os.Getwd()
-	//assert.NoError(err)
-
 	site := TestSites[0]
-	app, err := NewApp(site.Dir, false)
+	app, err := ddevapp.NewApp(site.Dir, false)
 	assert.NoError(err)
+	savedApp := *app
 
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
+		assert.NoError(err)
+		app = &savedApp
+		err = app.WriteConfig()
 		assert.NoError(err)
 	})
 
 	appName := app.Name
 	appType := app.Type
+	ddevVersion := versionconstants.DdevVersion
 
 	err = app.ValidateConfig()
 	if err != nil {
 		t.Fatalf("Failed to app.ValidateConfig(), err=%v", err)
 	}
 
+	testCases := []struct {
+		description       string
+		ddevVersion       string
+		versionConstraint string
+		error             string
+	}{
+		{"Invalid constraint", ddevVersion, ">= 1.twentythree", "constraint is not valid"},
+		{"Lower version", "v1.22.0", ">= 1.23", "your DDEV version 'v1.22.0' doesn't meet the constraint '>= 1.23'"},
+		{"Equal version", "v1.23.0", ">= 1.23", ""},
+		{"Not semver version", "2134asdf-dirty", ">= 1.23", ""},
+		{"Lower semver version with suffix", "v1.22.3-11-g8baef014e", ">= 1.23", "your DDEV version 'v1.22.3-11-g8baef014e' doesn't meet the constraint '>= 1.23'"},
+		{"Equal semver version with suffix", "v1.22.3-11-g8baef014e", ">= 1.22", ""},
+		{"Constraint with suffix", "v1.22.3-11-g8baef014e", ">= 1.23.0-0", "your DDEV version 'v1.22.3-11-g8baef014e' doesn't meet the constraint '>= 1.23.0-0'"},
+		{"Lower prerelease version", "v1.22.3-alpha2", ">= v1.22.3-alpha3", "your DDEV version 'v1.22.3-alpha2' doesn't meet the constraint '>= v1.22.3-alpha3'"},
+		{"Greater prerelease version", "v1.22.3-beta1", ">= v1.22.3-alpha3", ""},
+		{"Compare with suffixes", "v1.22.3-11-g8baef014e", ">= 1.22.0-0", ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			assert := asrt.New(t)
+			versionconstants.DdevVersion = tc.ddevVersion
+			app.DdevVersionConstraint = tc.versionConstraint
+			err = app.ValidateConfig()
+			if tc.error == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(err.Error(), tc.error)
+			}
+			app.DdevVersionConstraint = ""
+			versionconstants.DdevVersion = ddevVersion
+		})
+	}
+
 	app.Name = "Invalid!"
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "not a valid project name")
 
 	app.Name = appName
 	app.Type = "potato"
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "invalid app type")
 
 	app.Type = appType
 	app.PHPVersion = "1.1"
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "unsupported PHP")
 
 	app.PHPVersion = nodeps.PHPDefault
 	app.WebserverType = "server"
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "unsupported webserver type")
 
 	app.WebserverType = nodeps.WebserverDefault
 	app.AdditionalHostnames = []string{"good", "b@d"}
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "invalid hostname")
 
 	app.AdditionalHostnames = []string{}
+	// web_extra_exposed_ports shouldn't allow duplicate names for different config items
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "foo", WebContainerPort: 4000, HTTPPort: 4000, HTTPSPort: 4001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'name: foo'")
+	// web_extra_exposed_ports shouldn't allow not specified ports (for example, container_port: 0)
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 0, HTTPPort: 3000, HTTPSPort: 3001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "invalid 'container_port: 0'")
+	// web_extra_exposed_ports shouldn't allow wrong ports (for example, container_port: 123456)
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 123456, HTTPPort: 3000, HTTPSPort: 3001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "invalid 'container_port: 123456'")
+	// web_extra_exposed_ports shouldn't allow the same port for the same config item http_port/https_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3000},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "same 'http_port: 3000' and 'https_port: 3000'")
+	// web_extra_exposed_ports shouldn't allow the same port for different config items container_port/container_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "bar", WebContainerPort: 3000, HTTPPort: 4000, HTTPSPort: 4001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'container_port: 3000'")
+	// web_extra_exposed_ports shouldn't allow the same port for different config items http_port/http_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "bar", WebContainerPort: 4000, HTTPPort: 3000, HTTPSPort: 4001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'http_port: 3000'")
+	// web_extra_exposed_ports shouldn't allow the same port for different config items https_port/https_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "bar", WebContainerPort: 4000, HTTPPort: 4000, HTTPSPort: 3001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'https_port: 3001'")
+	// web_extra_exposed_ports shouldn't allow the same port for the same config item container_port/http_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "bar", WebContainerPort: 4000, HTTPPort: 3001, HTTPSPort: 4001},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'http_port: 3001'")
+	// web_extra_exposed_ports shouldn't allow the same port for different config items container_port/https_port
+	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
+		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
+		{Name: "bar", WebContainerPort: 4000, HTTPPort: 4000, HTTPSPort: 3000},
+	}
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	assert.Contains(err.Error(), "duplicate 'https_port: 3000'")
+
+	app.WebExtraExposedPorts = nil
 	app.AdditionalFQDNs = []string{"good.com", "b@d.com"}
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 	assert.Contains(err.Error(), "invalid hostname")
 
 	app.AdditionalFQDNs = []string{}
@@ -603,28 +678,38 @@ func TestConfigValidate(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		app.Timezone = "xxx"
 		err = app.ValidateConfig()
-		assert.Error(err)
+		require.Error(t, err)
 		app.Timezone = "America/Chicago"
 		err = app.ValidateConfig()
-		assert.NoError(err)
+		require.NoError(t, err)
 	}
 
 	// Make sure that wildcards work
 	app.AdditionalHostnames = []string{"x", "*.any"}
 	err = app.ValidateConfig()
-	assert.NoError(err)
-	err = app.Start()
-	assert.NoError(err)
-	staticURI := site.Safe200URIWithExpectation.URI
-	_, _, err = testcommon.GetLocalHTTPResponse(t, "http://x.ddev.site/"+staticURI)
-	assert.NoError(err)
-	_, _, err = testcommon.GetLocalHTTPResponse(t, "http://somethjingrandom.any.ddev.site/"+staticURI)
-	assert.NoError(err)
+	require.NoError(t, err)
+	err = app.WriteConfig()
+	require.NoError(t, err)
+	// This seems to completely fail on git-bash/Windows/mutagen. Hard to figure out why.
+	// Traditional Windows is not a very high priority
+	// This apparently started failing with Docker Desktop 4.19.0
+	// rfay 2023-05-02
+	if runtime.GOOS != "windows" {
+		err = app.Start()
+		require.NoError(t, err)
+		err = app.MutagenSyncFlush()
+		require.NoError(t, err)
+		staticURI := site.Safe200URIWithExpectation.URI
+		_, _, err = testcommon.GetLocalHTTPResponse(t, "http://x.ddev.site/"+staticURI)
+		require.NoError(t, err)
+		_, _, err = testcommon.GetLocalHTTPResponse(t, "http://somethjingrandom.any.ddev.site/"+staticURI)
+		require.NoError(t, err)
+	}
 
 	// Make sure that a bare "*" in the additional_hostnames does *not* work
 	app.AdditionalHostnames = []string{"x", "*"}
 	err = app.ValidateConfig()
-	assert.Error(err)
+	require.Error(t, err)
 }
 
 // TestWriteConfig tests writing config values to file
@@ -639,7 +724,7 @@ func TestWriteConfig(t *testing.T) {
 	err = fileutil.CopyDir("./testdata/TestWriteConfig/.ddev", filepath.Join(projDir, ".ddev"))
 	require.NoError(t, err)
 
-	app, err := NewApp(projDir, true)
+	app, err := ddevapp.NewApp(projDir, true)
 	assert.NoError(err)
 	err = os.Chdir(projDir)
 	assert.NoError(err)
@@ -649,8 +734,7 @@ func TestWriteConfig(t *testing.T) {
 		assert.NoError(err)
 		err = os.Chdir(pwd)
 		assert.NoError(err)
-		err = os.RemoveAll(projDir)
-		assert.NoError(err)
+		_ = os.RemoveAll(projDir)
 	})
 
 	// The default NewApp read should read config overrides, so we should have "config.extra.yaml"
@@ -658,14 +742,14 @@ func TestWriteConfig(t *testing.T) {
 	assert.Equal("drupal9", app.Type)
 
 	// However, if we ReadConfig() without includeOverrides, we should get "php" as the type
-	_, err = app.ReadConfig(false)
+	app, err = ddevapp.NewApp(projDir, false)
 	assert.NoError(err)
 	assert.Equal("php", app.Type)
 
 	err = app.WriteConfig()
 	assert.NoError(err)
 
-	// Now read the config we just wrote; it should have type php because ignored overrides.
+	// Now read the config we wrote; it should have type php because ignored overrides.
 	_, err = app.ReadConfig(false)
 	assert.NoError(err)
 	// app.WriteConfig() writes the version.DdevVersion to the updated config.yaml
@@ -680,129 +764,283 @@ func TestConfigOverrideDetection(t *testing.T) {
 	testDataDdevDir := filepath.Join("testdata", t.Name(), ".ddev")
 
 	assert := asrt.New(t)
-	app := &DdevApp{}
-	testDir, _ := os.Getwd()
+	app := &ddevapp.DdevApp{}
+	origDir, _ := os.Getwd()
 
 	site := TestSites[0]
-	switchDir := site.Chdir()
-	defer switchDir()
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s ConfigOverrideDetection", site.Name))
-	runTime()
+	defer util.TimeTrackC(fmt.Sprintf("%s ConfigOverrideDetection", site.Name))()
 
 	// Copy test overrides into the project .ddev directory
-	for _, item := range []string{"nginx", "nginx_full", "apache", "php", "mysql"} {
+	for _, item := range []string{"nginx", "nginx_full", "apache", "php", "mutagen", "mysql", "web-build", "web-entrypoint.d"} {
 		_ = os.RemoveAll(filepath.Join(site.Dir, ".ddev", item))
-		err := fileutil.CopyDir(filepath.Join(testDir, testDataDdevDir, item), filepath.Join(site.Dir, ".ddev", item))
-		assert.NoError(err)
+		err := fileutil.CopyDir(filepath.Join(origDir, testDataDdevDir, item), filepath.Join(site.Dir, ".ddev", item))
+		require.NoError(t, err)
 	}
 
 	testcommon.ClearDockerEnv()
-	err := app.Init(site.Dir)
-	assert.NoError(err)
+	err = app.Init(site.Dir)
+	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		_ = app.Stop(true, false)
-		for _, item := range []string{"apache", "php", "mysql", "nginx", "nginx_full"} {
+		for _, item := range []string{"nginx", "nginx_full", "apache", "php", "mutagen", "mysql", "web-build", "web-entrypoint.d"} {
 			f := app.GetConfigPath(item)
 			err = os.RemoveAll(f)
 			if err != nil {
 				t.Logf("failed to delete %s: %v", f, err)
 			}
 		}
+		_ = os.Chdir(origDir)
 	})
 
 	stdoutFunc, err := util.CaptureOutputToFile()
 	assert.NoError(err)
-	startErr := app.StartAndWait(2)
+	startErr := app.Start()
 	stdout := stdoutFunc()
 
-	var logs string
+	var logs, health string
 	if startErr != nil {
-		logs, _ = GetErrLogsFromApp(app, startErr)
+		logs, health, _ = ddevapp.GetErrLogsFromApp(app, startErr)
 	}
 
-	require.NoError(t, startErr, "app.StartAndWait() did not succeed: output:\n=====\n%s\n===== logs:\n========= logs =======\n%s\n========\n", stdout, logs)
+	require.NoError(t, startErr, "app.Start() did not succeed: output:\n=====\n%s\n===== health:\n========= health =======\n%s\n========\n===== logs:\n========= logs =======\n%s\n========\n", stdout, health, logs)
 
-	assert.Contains(stdout, "utf.cnf")
-	assert.Contains(stdout, "my-php.ini")
+	for _, configFile := range []string{"mysql-collation.cnf", "php-override.ini", "web-entrypoint-dosomething.sh", "Dockerfile.something", "Dockerfile", "pre.Dockerfile.somethingelse"} {
+		require.Contains(t, stdout, configFile, "did not find %s listed in custom configuration", configFile)
+	}
 
 	switch app.WebserverType {
+	case nodeps.WebserverApacheFPM:
+		require.Contains(t, stdout, "apache-site.conf")
+		require.NotContains(t, stdout, "nginx-site.conf")
+		require.NotContains(t, stdout, "nginx-snippet.conf")
+
 	case nodeps.WebserverNginxFPM:
-		assert.Contains(stdout, "nginx-site.conf")
-		assert.NotContains(stdout, "apache-site.conf")
-		assert.Contains(stdout, "junker99.conf")
+		require.Contains(t, stdout, "nginx-site.conf")
+		require.Contains(t, stdout, "nginx-snippet.conf")
+		require.NotContains(t, stdout, "apache-site.conf")
+
 	default:
-		assert.Contains(stdout, "apache-site.conf")
-		assert.NotContains(stdout, "nginx-site.conf")
+		t.Fatalf("Unknown WebserverType: %s", app.WebserverType)
 	}
-	assert.Contains(stdout, "Custom configuration takes effect")
-	runTime()
+
+	if app.IsMutagenEnabled() {
+		require.Contains(t, stdout, "mutagen.yml")
+	}
+	require.Contains(t, stdout, "Custom configuration is updated")
+
 }
 
 // TestPHPOverrides tests to make sure that PHP overrides work in all webservers.
 func TestPHPOverrides(t *testing.T) {
+	if nodeps.IsAppleSilicon() || dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
+		t.Skip("Skipping on Apple Silicon/Lima/Colima to ignore problems with 'connection reset by peer or connection refused'")
+	}
+
 	assert := asrt.New(t)
-	app := &DdevApp{}
-	tDir, err := os.Getwd()
-	require.NoError(t, err)
+	origDir, _ := os.Getwd()
+	app := &ddevapp.DdevApp{}
 
 	site := TestSites[0]
-	switchDir := site.Chdir()
-	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s %s", site.Name, t.Name()))
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
 
-	// Copy test overrides into the project .ddev directory
-	err = fileutil.CopyDir(filepath.Join(tDir, "testdata/TestPHPOverrides/.ddev/php"), filepath.Join(site.Dir, ".ddev/php"))
-	assert.NoError(err)
-	err = fileutil.CopyFile(filepath.Join(tDir, "testdata/TestPHPOverrides/phpinfo.php"), filepath.Join(site.Dir, site.Docroot, "phpinfo.php"))
-	assert.NoError(err)
+	t.Cleanup(func() {
+		_ = app.Stop(true, false)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+	runTime := util.TimeTrackC(fmt.Sprintf("%s %s", site.Name, t.Name()))
 
 	testcommon.ClearDockerEnv()
 	err = app.Init(site.Dir)
 	assert.NoError(err)
-	_ = app.Stop(true, false)
+	err = app.Stop(true, false)
+	require.NoError(t, err)
+
+	// Copy test overrides into the project .ddev directory
+	err = copy2.Copy(filepath.Join(origDir, "testdata/"+t.Name()+"/.ddev/php"), filepath.Join(site.Dir, ".ddev/php"))
+	assert.NoError(err)
+	err = fileutil.CopyFile(filepath.Join(origDir, "testdata/"+t.Name()+"/phpinfo.php"), filepath.Join(app.AppRoot, app.Docroot, "phpinfo.php"))
+	assert.NoError(err)
 
 	// And when we're done, we have to clean those out again.
 	t.Cleanup(func() {
 		runTime()
-		_ = app.Stop(true, false)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		err = app.Stop(true, false)
+		assert.NoError(err)
 
-		err = os.RemoveAll(filepath.Join(site.Dir, ".ddev/php"))
+		err = os.RemoveAll(filepath.Join(app.AppRoot, ".ddev/php"))
 		if err != nil {
 			t.Logf("failed to remove .ddev/php: %v", err)
 		}
-		err = os.RemoveAll(filepath.Join(site.Dir, "phpinfo.php"))
+		err = os.RemoveAll(filepath.Join(app.AppRoot, app.Docroot, "phpinfo.php"))
 		if err != nil {
 			t.Logf("failed to remove phpinfo.php: %v", err)
 		}
 	})
 
 	startErr := app.StartAndWait(5)
+	assert.NoError(startErr)
 	if startErr != nil {
-		logs, _ := GetErrLogsFromApp(app, startErr)
-		t.Logf("failed app.StartAndWait(): %v", startErr)
-		t.Fatalf("============== logs from app.StartAndWait() ==============\n%s\n", logs)
+		logs, health, _ := ddevapp.GetErrLogsFromApp(app, startErr)
+		t.Fatalf("============== health from app.StartAndWait() ==============\n%s\n============== logs from app.StartAndWait() ==============\n%s\n", health, logs)
 	}
 
-	_, _ = testcommon.EnsureLocalHTTPContent(t, "http://"+app.GetHostname()+"/phpinfo.php", `max_input_time</td><td class="v">999`)
-	err = app.Stop(true, false)
-	assert.NoError(err)
+	err = app.MutagenSyncFlush()
+	require.NoError(t, err, "failed to flush Mutagen sync")
+	_, _ = testcommon.EnsureLocalHTTPContent(t, app.GetHTTPURL()+"/phpinfo.php", `max_input_time</td><td class="v">999`, 60)
 
+}
+
+// TestPHPConfig checks some key PHP configuration items
+func TestPHPConfig(t *testing.T) {
+	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
+		t.Skip("skipping on Lima/Colima/Rancher because of unpredictable behavior, unable to connect")
+	}
+	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
+	app := &ddevapp.DdevApp{}
+	site := TestSites[0]
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	testcommon.ClearDockerEnv()
+	err = app.Init(site.Dir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.Remove(filepath.Join(app.AppRoot, ".ddev", ".env"))
+		_ = os.Remove(filepath.Join(app.AppRoot, "phpinfo.php"))
+	})
+
+	// Most of the time there's no reason to do all versions of PHP
+	// so we can subtract those if GOTEST_SHORT==""
+	phpKeys := nodeps.GetValidPHPVersions()
+	exclusions := []string{nodeps.PHP56, nodeps.PHP70, nodeps.PHP71, nodeps.PHP72, nodeps.PHP73, nodeps.PHP74, nodeps.PHP80, nodeps.PHP81}
+	if os.Getenv("GOTEST_SHORT") != "" {
+		phpKeys = util.SubtractSlices(phpKeys, exclusions)
+	}
+	sort.Strings(phpKeys)
+
+	err = fileutil.CopyFile(filepath.Join(origDir, "testdata/"+t.Name()+"/.ddev/.env"), filepath.Join(site.Dir, ".ddev/.env"))
+	require.NoError(t, err)
+	err = fileutil.CopyFile(filepath.Join(origDir, "testdata/"+t.Name()+"/phpinfo.php"), filepath.Join(site.Dir, site.Docroot, "phpinfo.php"))
+	require.NoError(t, err)
+
+	for _, v := range phpKeys {
+		app.PHPVersion = v
+		app.WebImageExtraPackages = []string{"php" + app.PHPVersion + "-redis"}
+		err = app.Restart()
+		require.NoError(t, err)
+
+		t.Logf("============= PHP version=%s ================", v)
+
+		out, _, err := app.Exec(&ddevapp.ExecOpts{
+			Cmd: "php --version",
+		})
+		require.NoError(t, err)
+		assert.Contains(out, v)
+
+		// Look for problems with serialize_precision,https://github.com/ddev/ddev/issues/5092
+		out, _, err = app.Exec(&ddevapp.ExecOpts{
+			Cmd: `php -r "var_dump(0.6);"`,
+		})
+		require.NoError(t, err)
+		out = strings.Trim(out, "\n")
+		require.Contains(t, out, `float(0.6)`)
+
+		// Verify that environment variables are available in php-fpm
+		out, _, err = testcommon.GetLocalHTTPResponse(t, app.GetHTTPURL()+"/phpinfo.php")
+		require.NoError(t, err)
+		assert.Contains(out, "phpversion="+v)
+		// Make sure that php-fpm isn't clearing environment variables
+		assert.Contains(out, "IS_DDEV_PROJECT=true")
+		// Make sure the .ddev/.env file works
+		assert.Contains(out, "SOMEENV=someenv-value")
+		assert.Contains(out, "DOLLAR_SINGLE_QUOTES=$SOMEENV $ sign")
+		assert.Contains(out, "DOLLAR_DOUBLE_QUOTES=someenv-value $ sign")
+		assert.Contains(out, "DOLLAR_DOUBLE_QUOTES_ESCAPED=$SOMEENV $ sign")
+
+		// This list does not contain all expected, as php5.6 is missing some, etc.
+		expectedExtensions := []string{"apcu", "bcmath", "bz2", "curl", "gd", "imagick", "intl", "ldap", "mbstring", "pgsql", "readline", "soap", "sqlite3", "uploadprogress", "xml", "xmlrpc", "zip"}
+		for _, e := range expectedExtensions {
+			assert.Contains(out, fmt.Sprintf(`,%s,`, e))
+		}
+	}
+
+	err = app.Stop(true, false)
+	require.NoError(t, err)
+}
+
+// TestPostgresConfigOverride makes sure that overriding Postgres config works
+func TestPostgresConfigOverride(t *testing.T) {
+	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	err := os.Chdir(tmpDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(tmpDir, false)
+	require.NoError(t, err)
+	app.Name = t.Name()
+	app.Database = ddevapp.DatabaseDesc{Type: nodeps.Postgres, Version: nodeps.PostgresDefaultVersion}
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(tmpDir)
+	})
+
+	err = app.Start()
+	require.NoError(t, err)
+
+	out, stderr, err := app.Exec(&ddevapp.ExecOpts{
+		Service: "db",
+		Cmd:     `psql -t -c "SELECT setting FROM pg_settings WHERE name='max_connections'"`,
+	})
+	assert.NoError(err)
+	assert.Equal(" 100\n\n", out, "out: %s, stderr: %s", out, stderr)
+
+	cfg, err := fileutil.ReadFileIntoString(app.GetConfigPath("postgres/postgresql.conf"))
+	require.NoError(t, err)
+	cfg = strings.ReplaceAll(cfg, "#ddev-generated", "#")
+	cfg = strings.ReplaceAll(cfg, `max_connections = 100`, `max_connections = 200`)
+	err = fileutil.TemplateStringToFile(cfg, nil, app.GetConfigPath("postgres/postgresql.conf"))
+	require.NoError(t, err)
+	err = app.Restart()
+	require.NoError(t, err)
+	out, stderr, err = app.Exec(&ddevapp.ExecOpts{
+		Service: "db",
+		Cmd:     `psql -t -c "SELECT setting FROM pg_settings WHERE name='max_connections'"`,
+	})
+	assert.NoError(err)
+	assert.Equal(" 200\n\n", out, "out: %s, stderr: %s", out, stderr)
 }
 
 // TestExtraPackages tests to make sure that *extra_packages config.yaml directives
 // work (and are overridden by *-build/Dockerfile).
 func TestExtraPackages(t *testing.T) {
 	assert := asrt.New(t)
-	app := &DdevApp{}
+	app := &ddevapp.DdevApp{}
 
 	site := TestSites[0]
 	switchDir := site.Chdir()
 	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s %s", site.Name, t.Name()))
+	runTime := util.TimeTrackC(fmt.Sprintf("%s %s", site.Name, t.Name()))
 
 	err := app.Init(site.Dir)
 	assert.NoError(err)
@@ -828,62 +1066,57 @@ func TestExtraPackages(t *testing.T) {
 
 	// Start and make sure that the packages don't exist already
 	err = app.Start()
-	assert.NoError(err)
+	require.NoError(t, err)
 
-	// Test db container to make sure no ncdu in there at beginning
-	_, _, err = app.Exec(&ExecOpts{
+	addedDBPackage := "sudo"
+	addedWebPackage := "dnsutils"
+
+	// Test db container to make sure no sudo in there at beginning
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
-		Cmd:     "command -v ncdu 2>/dev/null",
+		Cmd:     fmt.Sprintf("command -v %s 2>/dev/null", addedDBPackage),
 	})
 	assert.Error(err)
 	assert.Contains(err.Error(), "exit status 1")
 
-	addedPackage := "tidy"
-	addedPackageTitle := "Tidy"
-
-	_, _, err = app.Exec(&ExecOpts{
+	// Test web container to make sure we don't have the test package already
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "web",
-		Cmd:     fmt.Sprintf("dpkg -s php%s-%s >/dev/null 2>&1", app.PHPVersion, addedPackage),
+		Cmd:     fmt.Sprintf("dpkg -s %s >/dev/null 2>&1", addedWebPackage),
 	})
 	assert.Error(err)
 	assert.Contains(err.Error(), "exit status 1")
 
 	// Now add the packages and start again, they should be in there
-	app.WebImageExtraPackages = []string{"php" + app.PHPVersion + "-" + addedPackage}
-	app.DBImageExtraPackages = []string{"ncdu"}
-	err = app.Start()
-	assert.NoError(err)
+	app.WebImageExtraPackages = []string{addedWebPackage}
+	app.DBImageExtraPackages = []string{addedDBPackage}
+	err = app.Restart()
+	require.NoError(t, err)
 
-	stdout, stderr, err := app.Exec(&ExecOpts{
+	stdout, stderr, err := app.Exec(&ddevapp.ExecOpts{
 		Service: "web",
-		Cmd:     "dpkg -s php" + app.PHPVersion + "-" + addedPackage,
+		Cmd:     "dpkg -s " + addedWebPackage,
 	})
-	assert.NoError(err, "dpkg -s php%s-%s failed", app.PHPVersion, addedPackage, stdout, stderr)
+	assert.NoError(err, "dpkg -s %s failed", app.PHPVersion, addedWebPackage, stdout, stderr)
 
-	stdout, stderr, err = app.Exec(&ExecOpts{
-		Service: "web",
-		Cmd:     fmt.Sprintf("php -i | grep  '%s support =. enabled'", addedPackageTitle),
-	})
-	assert.NoError(err, "failed to grep for %s support, stdout=%s, stderr=%s", addedPackage, stdout, stderr)
-
-	stdout, _, err = app.Exec(&ExecOpts{
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
-		Cmd:     "command -v ncdu",
+		Cmd:     "command -v sudo",
 	})
 	assert.NoError(err)
-	assert.Equal("/usr/bin/ncdu", strings.Trim(stdout, "\n"))
+	assert.Equal(fmt.Sprintf("/usr/bin/%s", addedDBPackage), strings.Trim(stdout, "\r\n"))
 }
 
 // TestTimezoneConfig tests to make sure setting timezone config takes effect in the container.
 func TestTimezoneConfig(t *testing.T) {
 	assert := asrt.New(t)
-	app := &DdevApp{}
+	app := &ddevapp.DdevApp{}
 
 	site := TestSites[0]
 	switchDir := site.Chdir()
 	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s %s", t.Name(), site.Name))
+	runTime := util.TimeTrackC(fmt.Sprintf("%s %s", t.Name(), site.Name))
 
 	err := app.Init(site.Dir)
 	assert.NoError(err)
@@ -895,30 +1128,41 @@ func TestTimezoneConfig(t *testing.T) {
 		assert.NoError(err)
 	})
 
+	// Start test with empty timezone env
+	t.Setenv("TZ", "")
+
 	err = app.Start()
 	assert.NoError(err)
 
-	// Without timezone set, we should find Etc/UTC
-	stdout, _, err := app.Exec(&ExecOpts{
+	// Without timezone set, we should find Etc/UTC on Windows
+	hostTimezoneAbbr := "UTC"
+	hostTimezone := "UTC"
+	// Without timezone set, we should automatically detect local timezone on Linux, WSL2 and macOS
+	if runtime.GOOS != "windows" {
+		hostTimezoneAbbr, _ = time.Now().In(time.Local).Zone()
+		hostTimezone, _ = util.GetLocalTimezone()
+	}
+	stdout, _, err := app.Exec(&ddevapp.ExecOpts{
 		Service: "web",
 		Cmd:     "printf \"timezone=$(date +%Z)\n\" && php -r 'print \"phptz=\" . date_default_timezone_get();'",
 	})
 	assert.NoError(err)
-	assert.Equal("timezone=UTC\nphptz=UTC", stdout)
+	assert.Equal(fmt.Sprintf("timezone=%s\nphptz=%s", hostTimezoneAbbr, hostTimezone), stdout)
 
 	// Make sure db container is also working
-	stdout, _, err = app.Exec(&ExecOpts{
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
 		Cmd:     "echo -n timezone=$(date +%Z)",
 	})
 	assert.NoError(err)
-	assert.Equal("timezone=UTC", stdout)
+	assert.Equal(fmt.Sprintf("timezone=%s", hostTimezoneAbbr), stdout)
 
-	// With timezone set, we the correct timezone operational
+	// With timezone set, app.Timezone should be used first
+	t.Setenv("TZ", "Europe/Rome")
 	app.Timezone = "Europe/Paris"
 	err = app.Start()
 	require.NoError(t, err)
-	stdout, _, err = app.Exec(&ExecOpts{
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "web",
 		Cmd:     "printf \"timezone=$(date +%Z)\n\" && php -r 'print \"phptz=\" . date_default_timezone_get();'",
 	})
@@ -926,7 +1170,27 @@ func TestTimezoneConfig(t *testing.T) {
 	assert.Regexp(regexp.MustCompile("timezone=CES?T\nphptz=Europe/Paris"), stdout)
 
 	// Make sure db container is also working with CET
-	stdout, _, err = app.Exec(&ExecOpts{
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
+		Service: "db",
+		Cmd:     "echo -n timezone=$(date +%Z)",
+	})
+	assert.NoError(err)
+	assert.Regexp(regexp.MustCompile("timezone=CES?T"), stdout)
+
+	// With timezone set, TZ env should be used if app.Timezone is empty
+	t.Setenv("TZ", "Europe/Rome")
+	app.Timezone = ""
+	err = app.Start()
+	require.NoError(t, err)
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
+		Service: "web",
+		Cmd:     "printf \"timezone=$(date +%Z)\n\" && php -r 'print \"phptz=\" . date_default_timezone_get();'",
+	})
+	assert.NoError(err)
+	assert.Regexp(regexp.MustCompile("timezone=CES?T\nphptz=Europe/Rome"), stdout)
+
+	// Make sure db container is also working with CET
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
 		Cmd:     "echo -n timezone=$(date +%Z)",
 	})
@@ -936,17 +1200,19 @@ func TestTimezoneConfig(t *testing.T) {
 	runTime()
 }
 
-// TestComposerVersionConfig tests to make sure setting composer version takes effect in the container.
+// TestComposerVersionConfig tests to make sure setting Composer version takes effect in the container.
 func TestComposerVersionConfig(t *testing.T) {
+	if dockerutil.IsColima() || dockerutil.IsLima() {
+		t.Skip("Skipping on Lima/Colima, lots of network connections failed")
+	}
 	assert := asrt.New(t)
-	app := &DdevApp{}
-	testVersion := "2.0.0-RC2"
+	app := &ddevapp.DdevApp{}
 
 	site := TestSites[0]
 	switchDir := site.Chdir()
 	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s %s", t.Name(), site.Name))
+	runTime := util.TimeTrackC(fmt.Sprintf("%s %s", t.Name(), site.Name))
 
 	err := app.Init(site.Dir)
 	assert.NoError(err)
@@ -961,17 +1227,28 @@ func TestComposerVersionConfig(t *testing.T) {
 		assert.NoError(err)
 	})
 
-	app.ComposerVersion = testVersion
-	err = app.Start()
-	assert.NoError(err)
+	for _, testVersion := range []string{"2", "2.2", "2.5.5", "1", "stable", "preview", "snapshot"} {
+		app.ComposerVersion = testVersion
+		err = app.Start()
+		assert.NoError(err)
 
-	// Without timezone set, we should find Etc/UTC
-	stdout, _, err := app.Exec(&ExecOpts{
-		Service: "web",
-		Cmd:     "composer --version | awk '{print $3;}'",
-	})
-	assert.NoError(err)
-	assert.Equal(testVersion, strings.Trim(stdout, "\n"))
+		stdout, _, err := app.Exec(&ddevapp.ExecOpts{
+			Service: "web",
+			Cmd:     "composer --version 2>/dev/null | awk '/Composer version/ {print $3;}'",
+		})
+		assert.NoError(err)
+
+		// Ignore the non semantic versions for the moment e.g. stable or preview
+		// TODO: Figure out a way to test version key words
+		if isSemver(testVersion) {
+			stdout = strings.TrimSpace(stdout)
+			if strings.Count(testVersion, ".") < 2 {
+				assert.Contains(stdout, testVersion, "Found wrong composer version, testVersion=%s, found='%s'", testVersion, stdout)
+			} else {
+				assert.Equal(testVersion, stdout, "Found wrong composer version, expected %s, found='%s'", testVersion, stdout)
+			}
+		}
+	}
 
 	runTime()
 }
@@ -980,50 +1257,154 @@ func TestComposerVersionConfig(t *testing.T) {
 // Dockerfiles work properly
 func TestCustomBuildDockerfiles(t *testing.T) {
 	assert := asrt.New(t)
-	app := &DdevApp{}
+	app := &ddevapp.DdevApp{}
 
 	site := TestSites[0]
 	switchDir := site.Chdir()
 	defer switchDir()
 
-	runTime := util.TimeTrack(time.Now(), fmt.Sprintf("%s TestCustomBuildDockerfiles", site.Name))
+	runTime := util.TimeTrackC(fmt.Sprintf("%s TestCustomBuildDockerfiles", site.Name))
 
 	err := app.Init(site.Dir)
 	assert.NoError(err)
 	err = app.Stop(true, false)
 	assert.NoError(err)
 
-	defer func() {
-		_ = os.RemoveAll(app.GetConfigPath("web-build"))
+	t.Cleanup(func() {
+		runTime()
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.RemoveAll(app.GetConfigPath("web-build"))
+		assert.NoError(err)
 		_ = os.RemoveAll(app.GetConfigPath("db-build"))
-		_ = app.Stop(true, false)
-	}()
+	})
 
-	// Create simple dockerfiles that just touch /var/tmp/added-by-<container>txt
+	// Create simple dockerfiles with touch /var/tmp/added-by-<container>txt
 	for _, item := range []string{"web", "db"} {
-		err = WriteImageDockerfile(app.GetConfigPath(item+"-build/Dockerfile"), []byte(`
-ARG BASE_IMAGE
-FROM $BASE_IMAGE
+		err = fileutil.TemplateStringToFile("junkfile", nil, app.GetConfigPath(fmt.Sprintf("%s-build/junkfile", item)))
+		assert.NoError(err)
+		_ = os.MkdirAll(app.GetConfigPath(fmt.Sprintf("%s-build/customDir", item)), 0755)
+		err = fileutil.TemplateStringToFile("junkfile2 in customDir", nil, app.GetConfigPath(fmt.Sprintf("%s-build/customDir/junkfile2", item)))
+		assert.NoError(err)
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/Dockerfile"), []byte(`
 RUN touch /var/tmp/`+"added-by-"+item+".txt"))
 		assert.NoError(err)
+		// Add also Dockerfile.* alternatives
+		// Last one includes previously recommended ARG/FROM that needs to be removed
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/Dockerfile.test1"), []byte(`
+ADD junkfile /
+ADD customDir /customDir
+RUN touch /var/tmp/`+"added-by-"+item+"-test1.txt"))
+		assert.NoError(err)
+
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/Dockerfile.test2"), []byte(`
+RUN touch /var/tmp/`+"added-by-"+item+"-test2.txt"))
+		assert.NoError(err)
+
+		// Testing pre.Dockerfile.*
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/pre.Dockerfile.test3"), []byte(`
+RUN touch /var/tmp/`+"added-by-"+item+"-test3.txt"))
+		assert.NoError(err)
+
+		// Testing that pre comes before post, we create a file on pre and remove
+		// it on post
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/pre.Dockerfile.test4"), []byte(`
+RUN touch /var/tmp/`+"added-by-"+item+"-test4.txt"))
+		assert.NoError(err)
+		err = ddevapp.WriteImageDockerfile(app.GetConfigPath(item+"-build/Dockerfile.test4"), []byte(`
+RUN rm /var/tmp/`+"added-by-"+item+"-test4.txt"))
+		assert.NoError(err)
 	}
+
+	// Make sure that DDEV_PHP_VERSION gets into the web build
+	// and that TARGETARCH and friends are working
+	err = ddevapp.WriteImageDockerfile(app.GetConfigPath("web-build/Dockerfile.ddev-php-version"), []byte(`
+RUN touch /var/tmp/running-php-${DDEV_PHP_VERSION}
+RUN mkdir -p "/var/tmp/my-arch-info-is-${TARGETOS}-${TARGETARCH}-${TARGETPLATFORM}"
+`))
+	require.NoError(t, err)
+
+	// Make sure that TARGETARCH and friends working on db container
+	err = ddevapp.WriteImageDockerfile(app.GetConfigPath("db-build/Dockerfile.targets"), []byte(`
+RUN mkdir -p "/var/tmp/my-arch-info-is-${TARGETOS}-${TARGETARCH}-${TARGETPLATFORM}"
+`))
+	require.NoError(t, err)
+
 	// Start and make sure that the packages don't exist already
 	err = app.Start()
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	// Make sure that the expected in-container file has been created
 	for _, item := range []string{"web", "db"} {
-		_, _, err = app.Exec(&ExecOpts{
+		assert.FileExists(app.GetConfigPath("." + item + "imageBuild/Dockerfile"))
+		// Example files should not be copied
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/Dockerfile.example"))
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/pre.Dockerfile.example"))
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/README.txt"))
+
+		// Context files should be copied
+		assert.FileExists(app.GetConfigPath("." + item + "imageBuild/junkfile"))
+		assert.FileExists(app.GetConfigPath("." + item + "imageBuild/customDir/junkfile2"))
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
 			Service: item,
-			Cmd:     "ls /var/tmp/added-by-" + item + ".txt",
+			Cmd:     "ls /junkfile && ls /customDir/junkfile2",
 		})
 		assert.NoError(err)
+
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + ".txt >/dev/null",
+		})
+		assert.NoError(err)
+
+		// Dockerfiles should not be copied
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/Dockerfile.test1"))
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + "-test1.txt >/dev/null",
+		})
+		assert.NoError(err)
+
+		// Dockerfiles should not be copied
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/Dockerfile.test2"))
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + "-test2.txt >/dev/null",
+		})
+		assert.NoError(err)
+
+		// Dockerfiles should not be copied
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/pre.Dockerfile.test3"))
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + "-test3.txt >/dev/null",
+		})
+		assert.NoError(err)
+
+		out, stderr, err := app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     fmt.Sprintf("ls -d /var/tmp/my-arch-info-is-%s-%s-%s/%s", "linux", runtime.GOARCH, "linux", runtime.GOARCH),
+		})
+		require.NoError(t, err, "out=%s stderr=%s", out, stderr)
+
+		// Dockerfiles should not be copied
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/pre.Dockerfile.test4"))
+		assert.NoFileExists(app.GetConfigPath("." + item + "imageBuild/Dockerfile.test4"))
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + "-test4.txt 2>/dev/null",
+		})
+		assert.Error(err)
 	}
 
-	err = app.Stop(true, false)
-	assert.NoError(err)
+	// Dockerfiles should not be copied
+	assert.NoFileExists(app.GetConfigPath(".webimageBuild/Dockerfile.ddev-php-version"))
+	assert.NoFileExists(app.GetConfigPath(".dbimageBuild/Dockerfile.targets"))
 
-	runTime()
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
+		Cmd: fmt.Sprintf("ls /var/tmp/running-php-%s >/dev/null", app.PHPVersion),
+	})
+	assert.NoError(err)
 }
 
 // TestConfigLoadingOrder verifies that configs load in lexicographical order
@@ -1038,7 +1419,7 @@ func TestConfigLoadingOrder(t *testing.T) {
 	err = fileutil.CopyDir("./testdata/TestConfigLoadingOrder/.ddev", filepath.Join(projDir, ".ddev"))
 	require.NoError(t, err)
 
-	app, err := NewApp(projDir, true)
+	app, err := ddevapp.NewApp(projDir, true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -1046,8 +1427,7 @@ func TestConfigLoadingOrder(t *testing.T) {
 		assert.NoError(err)
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.RemoveAll(projDir)
-		assert.NoError(err)
+		_ = os.RemoveAll(projDir)
 	})
 	err = os.Chdir(app.AppRoot)
 	assert.NoError(err)
@@ -1064,7 +1444,7 @@ func TestConfigLoadingOrder(t *testing.T) {
 		assert.NoError(err)
 		err = os.Symlink(item, linkedMatch)
 		assert.NoError(err)
-		_, err = app.ReadConfig(true)
+		app, err = ddevapp.NewApp(app.AppRoot, true)
 		assert.NoError(err)
 		assert.Equal(filepath.Base(item), app.WebImage)
 		err = os.Remove(linkedMatch)
@@ -1081,64 +1461,258 @@ func TestConfigLoadingOrder(t *testing.T) {
 		assert.NoError(err)
 		err = os.Symlink(item, linkedMatch)
 		assert.NoError(err)
-		_, err = app.ReadConfig(true)
+		app, err = ddevapp.NewApp(app.AppRoot, true)
 		assert.Equal(filepath.Base(item), app.WebImage)
 	}
 
-	// Now we still have all those linked overrides, but do a ReadConfig() without allowing them
+	// Now we still have all those linked overrides, but do a NewApp() without allowing them
 	// and verify that they don't get loaded
-	_, err = app.ReadConfig(false)
+	app, err = ddevapp.NewApp(app.AppRoot, false)
 	assert.NoError(err)
 	assert.Equal("config.yaml", app.WebImage)
-
 }
 
-func TestPkgConfigMariaDBVersion(t *testing.T) {
-	// NewApp from scratch
-	// NewApp with config.yaml with mariadb_version and no dbimage
-	// NewApp with config.yaml with dbimage and no mariadb_version
-	// NewApp with both dbimage and
+// TestPkgConfigDatabaseDBVersion tests config for database
+func TestPkgConfigDatabaseDBVersion(t *testing.T) {
 	assert := asrt.New(t)
 
-	testDir, _ := os.Getwd()
+	origDir, _ := os.Getwd()
 
 	// Create a temporary directory and switch to it.
 	tmpDir := testcommon.CreateTmpDir(t.Name())
-	defer testcommon.CleanupDir(tmpDir)
-	defer testcommon.Chdir(tmpDir)()
-
-	systemTempDir, _ := testcommon.OsTempDir()
-
-	targetBase := filepath.Join(systemTempDir, "TestPkgConfigMariaDBVersion")
-	_ = os.RemoveAll(targetBase)
-	err := fileutil.CopyDir(filepath.Join(testDir, "testdata", "TestPkgConfigMariaDBVersion"), targetBase)
+	err := os.Chdir(tmpDir)
 	require.NoError(t, err)
 
-	mariaDBVersions := nodeps.ValidMariaDBVersions
-	for v := range mariaDBVersions {
-		for _, configType := range []string{"dbimage", "mariadb-version"} {
-			app := &DdevApp{}
-			appRoot := filepath.Join(targetBase, configType+"-"+v)
-			err = app.LoadConfigYamlFile(filepath.Join(appRoot, ".ddev", "config.yaml"))
-			assert.NoError(err)
-			if configType == "dbimage" {
-				assert.Equal("somedbimage:"+v, app.DBImage)
-			}
-			if configType == "mariadb-version" {
-				assert.Equal(v, app.MariaDBVersion)
-			}
+	_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", t.Name())
+	err = globalconfig.ReadGlobalConfig()
+	require.NoError(t, err)
 
-			app, err = NewApp(appRoot, false)
-			assert.NoError(err)
-			if configType == "dbimage" {
-				assert.Equal("somedbimage:"+v, app.DBImage, "NewApp() failed to respect existing dbimage")
-			}
-			if configType == "mariadb-version" {
-				assert.Equal(v, app.MariaDBVersion)
-				assert.Equal(version.GetDBImage(nodeps.MariaDB, v), app.GetDBImage(), "dbimage derived from app.MariaDBVersion was incorrect")
-			}
+	app, err := ddevapp.NewApp(tmpDir, false)
+	require.NoError(t, err)
+	app.Name = t.Name()
+	err = app.WriteConfig()
+	require.NoError(t, err)
 
-		}
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(tmpDir)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+	dbVersions := nodeps.GetValidDatabaseVersions()
+	for _, v := range dbVersions {
+		parts := strings.Split(v, ":")
+		require.True(t, len(parts) == 2)
+		configFile := app.ConfigPath
+		err = os.RemoveAll(configFile)
+		assert.NoError(err)
+		err = fileutil.AppendStringToFile(configFile, fmt.Sprintf("database:\n  type: %s\n  version: %s ", parts[0], parts[1]))
+		err = app.LoadConfigYamlFile(configFile)
+		assert.NoError(err)
+		assert.Equal(parts[0], app.Database.Type)
+		assert.Equal(parts[1], app.Database.Version)
+	}
+}
+
+// TestDatabaseConfigUpgrade tests whether upgrade from mariadb_version/mysql_version
+// to database format works correctly
+func TestDatabaseConfigUpgrade(t *testing.T) {
+	assert := asrt.New(t)
+
+	origDir, _ := os.Getwd()
+
+	// Create a temporary directory and switch to it.
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	err := os.Chdir(tmpDir)
+	require.NoError(t, err)
+
+	_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", t.Name())
+	err = globalconfig.ReadGlobalConfig()
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(tmpDir, false)
+	require.NoError(t, err)
+	app.Name = t.Name()
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(tmpDir)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+	for _, v := range []string{"mariadb:10.5", "mysql:5.7"} {
+		parts := strings.Split(v, ":")
+		require.True(t, len(parts) == 2)
+		configFile := app.ConfigPath
+		err = os.RemoveAll(configFile)
+		assert.NoError(err)
+		err = fileutil.AppendStringToFile(configFile, fmt.Sprintf("name: %s\n%s_version: %s\n", t.Name(), parts[0], parts[1]))
+		app, err := ddevapp.NewApp(tmpDir, false)
+		require.NoError(t, err)
+		assert.Equal(parts[0], app.Database.Type)
+		assert.Equal(parts[1], app.Database.Version)
+		assert.Empty(app.MySQLVersion)
+		assert.Empty(app.MariaDBVersion)
+	}
+}
+
+// TestConfigFunctionality tests to make sure that config values actually
+// cause their desired effects
+func TestConfigFunctionality(t *testing.T) {
+	assert := asrt.New(t)
+
+	origDir, _ := os.Getwd()
+
+	site := TestSites[0]
+
+	app, err := ddevapp.NewApp(site.Dir, false)
+	assert.NoError(err)
+	err = os.Chdir(site.Dir)
+	assert.NoError(err)
+
+	origApp := *app
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+
+		err = app.Stop(true, false)
+		assert.NoError(err)
+
+		err = origApp.WriteConfig()
+		assert.NoError(err)
+	})
+
+	hostHTTPPort := "9998"
+	hostHTTPSPort := "9999"
+	hostDBPort := "10099"
+
+	app.HostWebserverPort = hostHTTPPort
+	app.HostHTTPSPort = hostHTTPSPort
+	app.HostDBPort = hostDBPort
+
+	err = app.WriteConfig()
+	require.NoError(t, err)
+	err = app.Restart()
+	require.NoError(t, err)
+
+	require.Equal(t, hostHTTPPort, app.HostWebserverPort)
+	require.Equal(t, hostHTTPSPort, app.HostHTTPSPort)
+
+	safeURL := "http://127.0.0.1:" + hostHTTPPort + site.Safe200URIWithExpectation.URI
+	out, _, err := testcommon.GetLocalHTTPResponse(t, safeURL, 60)
+	assert.NoError(err)
+	assert.Contains(out, site.Safe200URIWithExpectation.Expect)
+
+	// This isn't very important, and is unusual
+	// On some WSL2 systems (tb-wsldd-05) it works fine locally, can't work in buildkite.
+	if !dockerutil.IsColima() && !nodeps.IsWSL2() {
+		safeURL = "https://127.0.0.1:" + hostHTTPSPort + site.Safe200URIWithExpectation.URI
+		out, _, err = testcommon.GetLocalHTTPResponse(t, safeURL, 60)
+		assert.NoError(err)
+		assert.Contains(out, site.Safe200URIWithExpectation.Expect)
 	}
 
+	// Make sure that the db port is configured
+	out, err = exec.RunHostCommand("mysql", "-uroot", "-proot", "--database=db", "--host=127.0.0.1", "--port="+hostDBPort, "-e", "SHOW TABLES;")
+	require.NoError(t, err, "failed host-side mysql command, output='%v'", out)
+}
+
+// TestConfigDefaultContainerTimeout verifies that `default_container_timeout` works
+// properly
+func TestConfigDefaultContainerTimeout(t *testing.T) {
+	if dockerutil.IsLima() {
+		t.Skip("Skipping on Lima, unknown why non-writeable filesystem error")
+	}
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
+	_ = os.Chdir(site.Dir)
+	app, err := ddevapp.NewApp("", true)
+	require.NoError(t, err)
+	app.DefaultContainerTimeout = nodeps.DefaultDefaultContainerTimeout
+	defaultTimeoutInt, _ := strconv.Atoi(nodeps.DefaultDefaultContainerTimeout)
+	tName := t.Name()
+
+	t.Cleanup(func() {
+		app.DefaultContainerTimeout = nodeps.DefaultDefaultContainerTimeout
+		_ = app.WriteConfig()
+		_ = app.Stop(true, false)
+		_ = os.RemoveAll(app.GetConfigPath("docker-compose." + tName + ".yaml"))
+		_ = os.Chdir(origDir)
+	})
+
+	simpleWaitTimeMatrix := []struct {
+		description string
+		maxWaitTime int
+		expectation int
+	}{
+		{"nospec", defaultTimeoutInt, defaultTimeoutInt},
+		{"nospec", 30, 30},
+		{"nohealthcheck", defaultTimeoutInt, defaultTimeoutInt},
+		{"nohealthcheck", 1200, 1200},
+		{"longtimeout", defaultTimeoutInt, defaultTimeoutInt},
+		{"longtimeout", 1200, 1200},
+		{"withshortstartperiod", defaultTimeoutInt, defaultTimeoutInt},
+		{"withshortstartperiod", 1200, 1200},
+		{"withlongstartperiod", defaultTimeoutInt, 1350},
+		{"withlongstartperiod", 1200, 1350},
+		{"intervalset", defaultTimeoutInt, 135},
+		{"intervalset", 1200, 1200},
+		{"intervalandretriesset", defaultTimeoutInt, 660},
+		{"intervalandretriesset", 1200, 1200},
+	}
+
+	for _, tc := range simpleWaitTimeMatrix {
+		t.Run(tc.description, func(t *testing.T) {
+			app.DefaultContainerTimeout = strconv.Itoa(tc.maxWaitTime)
+			app.DockerEnv()
+			dockerComposeSource := filepath.Join(origDir, "testdata", tName, fmt.Sprintf("docker-compose.%s.yaml", tc.description))
+			dockerComposeTarget := app.GetConfigPath("docker-compose." + tName + ".yaml")
+			err = copy2.Copy(dockerComposeSource, dockerComposeTarget, copy2.Options{})
+			require.NoError(t, err)
+			err = app.WriteDockerComposeYAML()
+			require.NoError(t, err)
+			maxWaitTime := app.GetMaxContainerWaitTime()
+			require.Equal(t, tc.expectation, maxWaitTime, "for tc=%v expected maxWaitTime to be %v but it was %v", tc, tc.expectation, maxWaitTime)
+		})
+	}
+
+	// Try snapshot restore with and without increased wait time
+	// Inspect db container start_period
+	// Inspect output of snapshot restore
+	_ = os.RemoveAll(app.GetConfigPath("docker-compose." + tName + ".yaml"))
+	for _, maxWaitTime := range []string{nodeps.DefaultDefaultContainerTimeout, "850"} {
+		app.DefaultContainerTimeout = maxWaitTime
+		app.DockerEnv()
+		err = app.WriteConfig()
+		require.NoError(t, err)
+		err = app.Restart()
+		require.NoError(t, err)
+
+		// Inspect db container for correct healthcheck
+		c, err := dockerutil.InspectContainer(ddevapp.GetContainerName(app, "db"))
+		require.NoError(t, err)
+		require.NotEqual(t, dockerTypes.ContainerJSON{}, c)
+		expectedWaitTime, _ := strconv.Atoi(maxWaitTime)
+		require.Equal(t, expectedWaitTime, int(c.Config.Healthcheck.StartPeriod.Seconds()), "db container healthcheck should have been %v with default_container_timeout set to %v", maxWaitTime, app.DefaultContainerTimeout)
+		_, err = app.Snapshot(t.Name() + maxWaitTime)
+		require.NoError(t, err)
+		err = app.RestoreSnapshot(t.Name() + maxWaitTime)
+		require.NoError(t, err)
+
+		// Inspect container that results from snapshot restore
+		c, err = dockerutil.InspectContainer(ddevapp.GetContainerName(app, "db"))
+		require.NoError(t, err)
+		require.NotEqual(t, dockerTypes.ContainerJSON{}, c)
+		expectedWaitTime = ddevapp.SnapshotRestoreDefaultWaitTime
+		// If the maxWaitTime was set to greater than the expected 600/SnapshotRestoreDefaultWaitTime
+		// (which is set in the snapshot restore code) then use the maxWaitTime value
+		if maxWaitTimeInt, _ := strconv.Atoi(maxWaitTime); maxWaitTimeInt > expectedWaitTime {
+			expectedWaitTime = maxWaitTimeInt
+		}
+		require.Equal(t, expectedWaitTime, int(c.Config.Healthcheck.StartPeriod.Seconds()), "db container healthcheck should have been %v with default_container_timeout set to %v", maxWaitTime, app.DefaultContainerTimeout)
+	}
 }

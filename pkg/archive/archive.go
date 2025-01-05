@@ -3,15 +3,21 @@ package archive
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
+	"compress/bzip2"
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ulikunitz/xz"
 )
 
 // Ungzip accepts a gzipped file and uncompresses it to the provided destination directory.
@@ -61,12 +67,96 @@ func Ungzip(source string, destDirectory string) error {
 	}
 
 	return nil
-
 }
 
-// Untar accepts a tar or tar.gz file and extracts the contents to the provided destination path.
+// UnBzip2 accepts a bzip2-compressed file and uncompresses it to the provided destination directory.
+func UnBzip2(source string, destDirectory string) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := f.Close(); e != nil {
+			err = e
+		}
+	}()
+	br := bufio.NewReader(f)
+
+	gf := bzip2.NewReader(br)
+
+	fname := strings.TrimSuffix(filepath.Base(f.Name()), ".bz2")
+	exFile, err := os.Create(filepath.Join(destDirectory, fname))
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := exFile.Close(); e != nil {
+			err = e
+		}
+	}()
+
+	_, err = io.Copy(exFile, gf)
+	if err != nil {
+		return err
+	}
+
+	err = exFile.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UnXz accepts an xz-compressed file and uncompresses it to the provided destination directory.
+func UnXz(source string, destDirectory string) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := f.Close(); e != nil {
+			err = e
+		}
+	}()
+	br := bufio.NewReader(f)
+
+	gf, err := xz.NewReader(br)
+	if err != nil {
+		return err
+	}
+
+	fname := strings.TrimSuffix(filepath.Base(f.Name()), ".xz")
+	exFile, err := os.Create(filepath.Join(destDirectory, fname))
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := exFile.Close(); e != nil {
+			err = e
+		}
+	}()
+
+	_, err = io.Copy(exFile, gf)
+	if err != nil {
+		return err
+	}
+
+	err = exFile.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Untar accepts a tar, tar.gz, tar.bz2, tar.xz file and extracts the contents to the provided destination path.
 // extractionDir is the path at which extraction should start; nothing will be extracted except the contents of
-// extractionDir
+// extractionDir. If extranctionDir is empty, the entire tarball is extracted.
 func Untar(source string, dest string, extractionDir string) error {
 	var tf *tar.Reader
 	f, err := os.Open(source)
@@ -80,16 +170,31 @@ func Untar(source string, dest string, extractionDir string) error {
 		return err
 	}
 
-	if strings.HasSuffix(source, "gz") {
+	switch {
+	case strings.HasSuffix(source, "gz"):
 		gf, err := gzip.NewReader(f)
 		if err != nil {
 			return err
 		}
-
 		defer util.CheckClose(gf)
-
 		tf = tar.NewReader(gf)
-	} else {
+
+	case strings.HasSuffix(source, "xz"):
+		gf, err := xz.NewReader(f)
+		if err != nil {
+			return err
+		}
+		tf = tar.NewReader(gf)
+
+	case strings.HasSuffix(source, "bz2"):
+		br := bufio.NewReader(f)
+		gf := bzip2.NewReader(br)
+		if err != nil {
+			return err
+		}
+		tf = tar.NewReader(gf)
+
+	default:
 		tf = tar.NewReader(f)
 	}
 
@@ -143,9 +248,12 @@ func Untar(source string, dest string, extractionDir string) error {
 				return err
 			}
 
+			err = util.Chmod(fullPath, fs.FileMode(file.Mode))
+			if err != nil {
+				return fmt.Errorf("failed to chmod %v dir %v, err: %v", fs.FileMode(file.Mode), fullPath, err)
+			}
+
 		case tar.TypeReg:
-			fallthrough
-		case tar.TypeRegA:
 			// Always ensure the directory is created before trying to move the file.
 			fullPathDir := filepath.Dir(fullPath)
 			err = os.MkdirAll(fullPathDir, 0755)
@@ -163,6 +271,11 @@ func Untar(source string, dest string, extractionDir string) error {
 			if err != nil {
 				return fmt.Errorf("failed to copy to file %v, err: %v", fullPath, err)
 			}
+			err = util.Chmod(fullPath, fs.FileMode(file.Mode))
+			if err != nil {
+				return fmt.Errorf("failed to chmod %v file %v, err: %v", fs.FileMode(file.Mode), fullPath, err)
+			}
+
 		}
 	}
 
@@ -180,7 +293,7 @@ func Untar(source string, dest string, extractionDir string) error {
 func Unzip(source string, dest string, extractionDir string) error {
 	zf, err := zip.OpenReader(source)
 	if err != nil {
-		return fmt.Errorf("Failed to open zipfile %s, err:%v", source, err)
+		return fmt.Errorf("failed to open zipfile %s, err:%v", source, err)
 	}
 	defer util.CheckClose(zf)
 
@@ -215,7 +328,7 @@ func Unzip(source string, dest string, extractionDir string) error {
 		if strings.HasSuffix(file.Name, "/") {
 			err = os.MkdirAll(fullPath, 0777)
 			if err != nil {
-				return fmt.Errorf("Failed to mkdir %s, err:%v", fullPath, err)
+				return fmt.Errorf("failed to mkdir %s, err:%v", fullPath, err)
 			}
 			continue
 		}
@@ -233,12 +346,12 @@ func Unzip(source string, dest string, extractionDir string) error {
 		// create and copy the file.
 		exFile, err := os.Create(fullPath)
 		if err != nil {
-			return fmt.Errorf("Failed to create file %v, err: %v", fullPath, err)
+			return fmt.Errorf("failed to create file %v, err: %v", fullPath, err)
 		}
 		_, err = io.Copy(exFile, rc)
 		_ = exFile.Close()
 		if err != nil {
-			return fmt.Errorf("Failed to copy to file %v, err: %v", fullPath, err)
+			return fmt.Errorf("failed to copy to file %v, err: %v", fullPath, err)
 		}
 	}
 
@@ -250,41 +363,49 @@ func Unzip(source string, dest string, extractionDir string) error {
 	return nil
 }
 
-// Tar takes a source and variable writers and walks 'source' writing each file
-// found to the tar writer; the purpose for accepting multiple writers is to allow
-// for multiple outputs (for example a file, or md5 hash)
-// From https://gist.github.com/sdomino/635a5ed4f32c93aad131#file-untargz-go
-func Tar(src string, tarballFilePath string) error {
-
+// Tar takes a source dir and tarballFilePath and a single exclusion path
+// It creates a gzipped tarball.
+// So sorry that exclusion is a single relative path. It should be a set of patterns, rfay 2021-12-15
+func Tar(src string, tarballFilePath string, exclusion string) error {
 	// ensure the src actually exists before trying to tar it
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("Unable to tar files - %v", err.Error())
+		return fmt.Errorf("unable to tar files - %v", err.Error())
 	}
+	separator := string(rune(filepath.Separator))
 
-	file, err := os.Create(tarballFilePath)
+	tarball, err := os.Create(tarballFilePath)
 	if err != nil {
-		return fmt.Errorf("Could not create tarball file '%s', got error '%s'", tarballFilePath, err.Error())
+		return fmt.Errorf("could not create tarball file '%s', got error '%s'", tarballFilePath, err.Error())
 	}
 	// nolint: errcheck
-	defer file.Close()
+	defer tarball.Close()
 
-	mw := io.MultiWriter(file)
+	mw := io.MultiWriter(tarball)
 
-	//gzw := gzip.NewWriter(mw)
-	//defer gzw.Close()
+	gzw := gzip.NewWriter(mw)
+	defer gzw.Close()
 
-	tw := tar.NewWriter(mw)
+	tw := tar.NewWriter(gzw)
 	defer tw.Close()
 
 	// walk path
-	return filepath.Walk(src, func(file string, fi os.FileInfo, err error) error {
-
+	return filepath.WalkDir(src, func(file string, info fs.DirEntry, errArg error) error {
 		// return on any error
-		if err != nil {
-			return err
+		if errArg != nil {
+			return errArg
+		}
+
+		relativePath := strings.TrimPrefix(file, src+separator)
+
+		if exclusion != "" && strings.HasPrefix(relativePath, exclusion) {
+			return nil
 		}
 
 		// return on non-regular files (thanks to [kumo](https://medium.com/@komuw/just-like-you-did-fbdd7df829d3) for this suggested update)
+		fi, err := info.Info()
+		if err != nil {
+			return nil
+		}
 		if !fi.Mode().IsRegular() {
 			return nil
 		}
@@ -294,8 +415,35 @@ func Tar(src string, tarballFilePath string) error {
 		if err != nil {
 			return err
 		}
+		// Windows may not get zero size of file, https://github.com/golang/go/issues/23493
+		// No idea why fi.Size() comes through as zero for a few files
+		stat, err := os.Stat(file)
+		if err != nil {
+			return err
+		}
+		header.Size = stat.Size()
 
-		// update the name to correctly reflect the desired destination when untaring
+		// open files for tarring
+		f, err := os.Open(file)
+		if err != nil {
+			return err
+		}
+
+		// Windows filesystem has no concept of executable bit, but we're copying shell scripts
+		// and they need to be executable. So if we detect a shell script
+		// set its mode to executable. It seems this is what utilities like git-bash
+		// and cygwin, etc. have done for years to work around the lack of mode bits on NTFS,
+		// for example, see https://stackoverflow.com/a/25730108/215713
+		if runtime.GOOS == "windows" {
+			buffer := make([]byte, 16)
+			_, _ = f.Read(buffer)
+			_, _ = f.Seek(0, 0)
+			if strings.HasPrefix(string(buffer), "#!") {
+				header.Mode = 0755
+			}
+		}
+
+		// update the name to correctly reflect the desired destination when untarring
 		header.Name = strings.TrimPrefix(strings.Replace(file, src, "", -1), string(filepath.Separator))
 		if runtime.GOOS == "windows" {
 			header.Name = strings.Replace(header.Name, `\`, `/`, -1)
@@ -306,21 +454,76 @@ func Tar(src string, tarballFilePath string) error {
 			return err
 		}
 
-		// open files for taring
-		f, err := os.Open(file)
-		if err != nil {
-			return err
-		}
-
 		// copy file data into tar writer
 		if _, err := io.Copy(tw, f); err != nil {
 			return err
 		}
 
-		// manually close here after each file operation; defering would cause each file close
+		// manually close here after each file operation; deferring would cause each file close
 		// to wait until all operations have completed.
 		f.Close()
 
 		return nil
 	})
+}
+
+// DownloadAndExtractTarball takes an url to a tar.gz file and
+// extracts into a new a temp directory and the directory
+// and a cleanup function.
+// It's the caller's responsibility to call the cleanup function.
+func DownloadAndExtractTarball(url string, removeTopLevel bool) (string, func(), error) {
+	base := filepath.Base(url)
+	f, err := os.CreateTemp("", fmt.Sprintf("%s_*.tar.gz", base))
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to create temp file: %v", err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	util.Debug("Downloading %s to %s", url, f.Name())
+	tarball := f.Name()
+	defer func() {
+		_ = os.Remove(tarball)
+	}()
+
+	err = util.DownloadFile(tarball, url, true)
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to download %v: %v", url, err)
+	}
+	extractedDir, cleanup, err := ExtractTarballWithCleanup(tarball, removeTopLevel)
+	return extractedDir, cleanup, err
+}
+
+// ExtractTarballWithCleanup takes a tarball file and extracts it into a temp directory
+// Caller is responsible for cleanup of the temp directory using the returned
+// cleanup function.
+// If removeTopLevel is true, the top level directory will be removed.
+func ExtractTarballWithCleanup(tarball string, removeTopLevel bool) (string, func(), error) {
+	tmpDir, err := os.MkdirTemp("", fmt.Sprintf("ddev_%s_*", filepath.Base(tarball)))
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to create temp dir: %v", err)
+	}
+
+	err = Untar(tarball, tmpDir, "")
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to untar %v: %v", tmpDir, err)
+	}
+
+	// If removeTopLevel then the guts of the tarball are the first level directory
+	// Really the UnTar() function should take strip-components as an argument
+	// but not going to do that right now.
+	extractedDir := tmpDir
+	if removeTopLevel {
+		list, err := fileutil.ListFilesInDir(tmpDir)
+		if err != nil {
+			return "", nil, fmt.Errorf("unable to list files in %v: %v", tmpDir, err)
+		}
+		if len(list) == 0 {
+			return "", nil, fmt.Errorf("no files found in %v", tmpDir)
+		}
+		extractedDir = path.Join(tmpDir, list[0])
+	}
+	cleanupFunc := func() { _ = os.RemoveAll(tmpDir) }
+	return extractedDir, cleanupFunc, nil
 }

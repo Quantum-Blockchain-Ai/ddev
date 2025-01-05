@@ -2,13 +2,23 @@ package nodeps
 
 import (
 	"math/rand"
+	"net"
 	"os"
+	"regexp"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/term"
 )
 
 // ArrayContainsString returns true if slice contains element
 func ArrayContainsString(slice []string, element string) bool {
+	if slice == nil {
+		return false
+	}
 	return !(PosString(slice, element) == -1)
 }
 
@@ -39,6 +49,7 @@ func RemoveItemFromSlice(slice []string, item string) []string {
 }
 
 // From https://www.calhoun.io/creating-random-strings-in-go/
+// nolint: revive
 var seededRand *rand.Rand = rand.New(
 	rand.NewSource(time.Now().UnixNano()))
 
@@ -53,9 +64,25 @@ func RandomString(length int) string {
 	return string(b)
 }
 
-// IsWSL2() returns true if running WSL2
-func IsWSL2() bool {
-	return GetWSLDistro() != ""
+// IsAppleSilicon returns true if running on mac M1
+func IsAppleSilicon() bool {
+	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+}
+
+// IsGitpod returns true if running on gitpod.io
+func IsGitpod() bool {
+	if os.Getenv("DDEV_PRETEND_GITPOD") == "true" {
+		return true
+	}
+	return runtime.GOOS == "linux" && os.Getenv("GITPOD_WORKSPACE_ID") != ""
+}
+
+// IsCodespaces returns true if running on GitHub Codespaces
+func IsCodespaces() bool {
+	if os.Getenv("DDEV_PRETEND_CODESPACES") == "true" {
+		return true
+	}
+	return runtime.GOOS == "linux" && os.Getenv("CODESPACES") == "true"
 }
 
 // GetWSLDistro returns the WSL2 distro name if on Linux
@@ -65,4 +92,63 @@ func GetWSLDistro() string {
 		wslDistro = os.Getenv("WSL_DISTRO_NAME")
 	}
 	return wslDistro
+}
+
+// IsLetter returns true if all chars in string are alpha
+func IsLetter(s string) bool {
+	for _, r := range s {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsInteger returns true if the string is integer
+func IsInteger(s string) bool {
+	_, err := strconv.ParseInt(s, 0, 64)
+	return err == nil
+}
+
+// GetTerminalWidthHeight returns width, height if on terminal
+// or 80, 0 if not. If we can't get terminal info, we'll assume 80x24
+func GetTerminalWidthHeight() (int, int) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		width, height, err := term.GetSize(int(os.Stdout.Fd()))
+		if err == nil {
+			return width, height
+		}
+	}
+	return 80, 24
+}
+
+// IsIPAddress returns true if ip is ipv4 or ipv6 address
+func IsIPAddress(ip string) bool {
+	if net.ParseIP(ip) != nil {
+		return true
+	}
+	return false
+}
+
+// GrepStringInBuffer finds strings that match needle
+func GrepStringInBuffer(buffer string, needle string) []string {
+	re := regexp.MustCompilePOSIX(needle)
+	matches := re.FindStringSubmatch(buffer)
+	return matches
+}
+
+// PathWithSlashesToArray returns an array of all possible paths separated by slashes out
+// of a single one.
+// i.e. path/to/file will return {"path", "path/to", "path/to/file"}
+func PathWithSlashesToArray(path string) []string {
+	var paths []string
+	var partial string
+	for _, p := range strings.Split(path, "/") {
+		partial += p
+		if len(partial) > 0 {
+			paths = append(paths, partial)
+		}
+		partial += "/"
+	}
+	return paths
 }

@@ -28,7 +28,7 @@ type Flag struct {
 	Type        typeValue        // type, defaults to bool
 	DefValue    defValueValue    // default value (as text); for usage message
 	NoOptDefVal noOptDefValValue // default value (as text); if the flag is on the command line without any options
-	Annotations annotationsValue // used by cobra.Command bash autocomple code
+	Annotations annotationsValue // used by cobra.Command Bash autocomplete code
 }
 
 // FlagsDefinition is an array of Flag holding all defined flags of a command.
@@ -81,7 +81,7 @@ const (
 // implemented.
 // To implement a new type add the required line to the switch statement in
 // AssignToCommand and set it here to true, that's all. If a new type is
-// added which is not defined here just add a new constant above and here.
+// added which is not defined here add a new constant above and here.
 var ValidTypes = map[typeValue]bool{
 	ftTest1:          false, // used for testing only
 	ftTest2:          true,  // used for testing only
@@ -140,7 +140,7 @@ func formatErrorItem(level int, prefix string, format string, a ...interface{}) 
 // line or an empty string if no error was given.
 func extractError(err error) string {
 	if err != nil {
-		return "\n" + strings.Trim(err.Error(), "\n")
+		return "\n" + strings.Trim(err.Error(), "\r\n")
 	}
 
 	return ""
@@ -161,7 +161,7 @@ func (v *nameValue) validate(longOptions *map[nameValue]bool) error {
 // validate checks a shorthandValue for uniqueness and containing one ASCII
 // character only.
 func (v *shorthandValue) validate(shortOptions *map[shorthandValue]nameValue, name nameValue) error {
-	var errors string = ""
+	var errors string
 
 	// Check shorthand does not already exist
 	if flagOfShorthand, found := (*shortOptions)[*v]; found {
@@ -261,7 +261,7 @@ func (v *annotationsValue) validate() error {
 func (f *Flag) validateFlag(longOptions *map[nameValue]bool, shortOptions *map[shorthandValue]nameValue) error {
 	errors := ""
 
-	// Chech all fields
+	// Check all fields
 	errors += extractError(f.Name.validate(longOptions))
 	errors += extractError(f.Shorthand.validate(shortOptions, f.Name))
 	errors += extractError(f.Usage.validate())
@@ -287,7 +287,7 @@ func (f *Flags) Init(commandName, script string) {
 func (f *Flags) validateFlags(flags *FlagsDefinition) error {
 	var errors string
 
-	// Temporay vars to precheck for duplicated flags. It's still possible
+	// Temporary vars to precheck for duplicated flags. It's still possible
 	// other commands will introduce the same flags which is tested
 	// afterwards by cobra.
 	long := map[nameValue]bool{"help": true}
@@ -305,7 +305,7 @@ func (f *Flags) validateFlags(flags *FlagsDefinition) error {
 	}
 
 	if errors != "" {
-		return fmt.Errorf("The following problems were found in the flags definition of the command '%s' in '%s':%s", f.CommandName, f.Script, errors)
+		return fmt.Errorf("the following problems were found in the flags definition of the command '%s' in '%s':%s", f.CommandName, f.Script, errors)
 	}
 
 	return nil
@@ -324,7 +324,7 @@ func (f *Flags) LoadFromJSON(data string) error {
 	// Import the JSON to the FlagsDefinition structure and return in case of
 	// error
 	if err = json.Unmarshal([]byte(data), &defs); err != nil {
-		return err
+		return fmt.Errorf("failed to json-unmarshall flags '%v': %v", data, err)
 	}
 
 	// Validate the user provided flags and return in case of error
@@ -344,7 +344,7 @@ func (f *Flags) AssignToCommand(command *cobra.Command) error {
 	for _, flag := range f.Definition {
 		// Create the flag at the command
 		switch flag.Type {
-		case FtBool /*, ""*/ : // empty type defaults to bool
+		case FtBool /*, ""*/ : // Empty type defaults to bool
 			command.Flags().BoolP(string(flag.Name), string(flag.Shorthand), false, string(flag.Usage))
 		case FtInt:
 			command.Flags().IntP(string(flag.Name), string(flag.Shorthand), 0, string(flag.Usage))
@@ -358,7 +358,7 @@ func (f *Flags) AssignToCommand(command *cobra.Command) error {
 				panic(fmt.Sprintf("Error implementation missing for type '%s'", flag.Type))
 			}
 
-			continue // continue here, nothing to set for this flag
+			continue // Continue here, nothing to set for this flag
 		}
 
 		// Update default values and annotations
@@ -377,7 +377,7 @@ func (f *Flags) AssignToCommand(command *cobra.Command) error {
 	}
 
 	if errors != "" {
-		return fmt.Errorf("The following problems were found while assigning the flags to the command '%s' in '%s':%s", f.CommandName, f.Script, errors)
+		return fmt.Errorf("the following problems were found while assigning the flags to the command '%s' in '%s':%s", f.CommandName, f.Script, errors)
 	}
 
 	return nil

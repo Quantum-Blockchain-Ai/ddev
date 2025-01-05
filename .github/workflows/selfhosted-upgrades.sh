@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -eu
 
@@ -22,7 +22,7 @@ fi
 # Upgrade various items on various operating systems
 case $os in
 darwin)
-    for item in mkcert mkdocs golang golangci-lint ddev; do
+    for item in mkdocs golang golangci-lint ddev; do
         brew upgrade $item || brew install $item || true
     done
     ;;
@@ -38,7 +38,7 @@ yes | ddev delete images
 
 # Remove any -built images, as we want to make sure tests do the building.
 docker rmi -f $(docker images --filter "dangling=true" -q --no-trunc) >/dev/null || true
-docker rmi -f $(docker images | awk '/drud.*-built/ {print $3}' ) >/dev/null || true
+docker rmi -f $(docker images | awk '/ddev.*-built/ {print $3}' ) >/dev/null || true
 
 # Make sure the global internet detection timeout is not set to 0 (broken)
-perl -pi -e 's/^internet_detection_timeout_ms:.*$/internet_detection_timeout_ms: 750/g' ~/.ddev/global_config.yaml
+perl -pi -e 's/^internet_detection_timeout_ms:.*$/internet_detection_timeout_ms: 3000/g' ~/.ddev/global_config.yaml

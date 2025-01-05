@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"github.com/drud/ddev/pkg/globalconfig"
-	"strings"
-
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -14,13 +12,14 @@ var restartAll bool
 
 // RestartCmd rebuilds an apps settings
 var RestartCmd = &cobra.Command{
-	Use:   "restart [projects]",
-	Short: "Restart a project or several projects.",
-	Long:  `Stops named projects and then starts them back up again.`,
+	ValidArgsFunction: ddevapp.GetProjectNamesFunc("all", 0),
+	Use:               "restart [projects]",
+	Short:             "Restart a project or several projects.",
+	Long:              `Stops named projects and then starts them back up again.`,
 	Example: `ddev restart
 ddev restart <project1> <project2>
 ddev restart --all`,
-	PreRun: func(cmd *cobra.Command, args []string) {
+	PreRun: func(_ *cobra.Command, _ []string) {
 		dockerutil.EnsureDdevNetwork()
 	},
 	Run: func(cmd *cobra.Command, args []string) {
@@ -32,31 +31,33 @@ ddev restart --all`,
 			instrumentationApp = projects[0]
 		}
 
+		skip, err := cmd.Flags().GetBool("skip-confirmation")
+		if err != nil {
+			util.Failed(err.Error())
+		}
+
+		// Look for version change and opt-in to instrumentation if it has changed.
+		err = checkDdevVersionAndOptInInstrumentation(skip)
+		if err != nil {
+			util.Failed(err.Error())
+		}
+
 		for _, app := range projects {
 
 			output.UserOut.Printf("Restarting project %s...", app.GetName())
-			err = app.Stop(false, false)
-			if err != nil {
-				util.Failed("Failed to restart %s: %v", app.GetName(), err)
-			}
-
-			err = app.Start()
+			err = app.Restart()
 			if err != nil {
 				util.Failed("Failed to restart %s: %v", app.GetName(), err)
 			}
 
 			util.Success("Restarted %s", app.GetName())
-			httpURLs, urlList, _ := app.GetAllURLs()
-			if globalconfig.GetCAROOT() == "" {
-				urlList = httpURLs
-			}
-
-			util.Success("Your project can be reached at %s", strings.Join(urlList, " "))
+			emitReachProjectMessage(app)
 		}
 	},
 }
 
 func init() {
-	RestartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "restart all projects")
+	RestartCmd.Flags().BoolP("skip-confirmation", "y", false, "Skip any confirmation steps")
+	RestartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "Restart all projects")
 	RootCmd.AddCommand(RestartCmd)
 }

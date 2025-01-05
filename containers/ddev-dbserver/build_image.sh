@@ -3,6 +3,8 @@
 # Build a ddev-dbserver image for variety of mariadb/mysql
 # and per architecture, optionally push
 # By default loads to local docker
+# Example:
+# ./build_image.sh --db-type=mysql --db-major-version=8.4 --archs=linux/arm64 --tag=v1.23.4-22-gfe969a5bb-dirty --docker-args=
 
 set -eu -o pipefail
 
@@ -25,7 +27,7 @@ if [[ ${PIPESTATUS[0]} -ne 4 ]]; then
 fi
 
 OPTS=-h,-v:,-d:
-LONGOPTS=archs:,db-type:,db-major-version:,db-pinned-version:,docker-args:,tag:,push,help
+LONGOPTS=archs:,db-type:,db-major-version:,db-pinned-version:,docker-args:,docker-org:,tag:,push,help
 
 ! PARSED=$(getopt --options=$OPTS --longoptions=$LONGOPTS --name "$0" -- "$@")
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
@@ -81,8 +83,12 @@ while true; do
     IMAGE_TAG=$2
     shift 2
     ;;
+  --docker-org)
+    DOCKER_ORG=$2
+    shift 2
+    ;;
   -h | --help)
-    echo "Usage: $0 --db-type [mariadb|mysql] --db-major-version <major> --tag <image_tag> --archs <comma-delimted_architectures> --push --no-load"
+    echo "Usage: $0 --db-type [mariadb|mysql] --db-major-version <major> --tag <image_tag> --archs <comma-delimited_architectures> --push --no-load"
     printf "Examples: $0 ./build_image.sh --db-type mysql --db-major-version 8.0 --tag junker99 --archs linux/amd64 --push
   $0 --db-type mariadb --db-major-version 10.3 --tag junker99 --archs linux/amd64,linux/arm64"
     exit 0
@@ -99,24 +105,35 @@ if [ -z ${DB_PINNED_VERSION:-} ]; then
   DB_PINNED_VERSION=${DB_MAJOR_VERSION}
 fi
 
-printf "\n\n========== Building drud/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG} for ${ARCHS} with pinned version ${DB_PINNED_VERSION} ==========\n"
+BASE_IMAGE=${DB_TYPE}
 
+set -x
+
+if [ ${DB_TYPE} = "mysql" ]; then
+    # For mysql 5.7 arm64, we have to use our own base images at ddev/mysql
+    if [ ${DB_MAJOR_VERSION} = "5.7" ] && [[ "$ARCHS" == *"linux/arm64"* ]]; then
+      BASE_IMAGE=ddev/mysql
+    elif [ "${DB_MAJOR_VERSION:-}" = "8.0" ] || [ "${DB_MAJOR_VERSION}" = "8.4" ]; then
+      BASE_IMAGE=bitnami/mysql
+    fi
+fi
+printf "\n\n========== Building ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG} from ${BASE_IMAGE} for ${ARCHS} with pinned version ${DB_PINNED_VERSION} ==========\n"
+
+# Build up the -t section with optionally both tags
+tag_directive="-t ${DOCKER_ORG}/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
+if [[ ${IMAGE_TAG} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  tag_directive="$tag_directive -t ${DOCKER_ORG}/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:latest"
+fi
 if [ ! -z ${PUSH:-} ]; then
-  echo "building/pushing drud/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
+  echo "building/pushing ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
   set -x
-  docker buildx build --push --platform ${ARCHS} ${DOCKER_ARGS} --build-arg="DB_TYPE=${DB_TYPE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" --build-arg="DB_VERSION=${DB_MAJOR_VERSION}" -t "drud/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}" .
+  docker buildx build --push --platform ${ARCHS} ${DOCKER_ARGS} --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" ${tag_directive}  .
   set +x
 fi
 
 # By default, load/import into local docker
-if [ -z ${NO_LOAD:-} ]; then
-  if [[ ${ARCHS} =~ ${MYARCH} ]]; then
-    echo "Loading to local docker drud/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
-    set -x
-    docker buildx build --load --platform ${MYARCH} ${DOCKER_ARGS} --build-arg="DB_TYPE=${DB_TYPE}" --build-arg="DB_VERSION=${DB_MAJOR_VERSION}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" -t "drud/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}" .
-    set +x
-  else
-    echo "This architecture (${MYARCH}) was not built, so not loading"
-    exit
-  fi
+set -x
+if [ -z "${PUSH:-}" ]; then
+    echo "Loading to local docker ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
+    docker buildx build --load ${DOCKER_ARGS} --build-arg="DB_TYPE=${DB_TYPE}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" ${tag_directive} .
 fi

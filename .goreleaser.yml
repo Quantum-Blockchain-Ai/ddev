@@ -1,0 +1,591 @@
+# DDEV goreleaser configuration
+# Handles uploading built executables to most of the places they go
+# See https://ddev.readthedocs.io/en/stable/developers/release-management/#environment-variables-required
+# for environment variables that may be used.
+
+version: 2
+##### BUILDS ######
+builds:
+- id: ddev
+  main: ./cmd/ddev
+
+  # Requires make  darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64 mkcert
+  builder: prebuilt
+  goos:
+  - linux
+  - windows
+  - darwin
+  goarch:
+  - amd64
+  - arm64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/{{.Os}}_{{.Arch}}/ddev{{.Ext}}
+  binary: ddev
+
+- id: mkcert
+  # requires make completions
+  builder: prebuilt
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - arm64
+  - amd64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/{{.Os}}_{{.Arch}}/mkcert{{.Ext}}
+  binary: mkcert
+
+- id: completions-tarball
+  # requires make completions
+  builder: prebuilt
+  goos:
+  - linux
+  goarch:
+  - arm64
+  prebuilt:
+    path: .gotmp/bin/completions.tar.gz
+  binary: completions.tar.gz
+
+- id: ddev_bash_completion.sh
+  # requires make completions
+  builder: prebuilt
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - arm64
+  - amd64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/completions/ddev_bash_completion.sh
+  binary: ddev_bash_completion.sh
+
+- id: ddev_zsh_completion.sh
+  # requires make completions
+  builder: prebuilt
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - arm64
+  - amd64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/completions/ddev_zsh_completion.sh
+  binary: ddev_zsh_completion.sh
+
+- id: ddev_fish_completion.sh
+  # requires make completions
+  builder: prebuilt
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - arm64
+  - amd64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/completions/ddev_fish_completion.sh
+  binary: ddev_fish_completion.sh
+
+- id: ddev-windows-amd64-installer
+  builder: prebuilt
+  goos:
+  - windows
+  goarch:
+  - amd64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/windows_amd64/ddev_windows_amd64_installer.exe
+  binary: ddev-windows-amd64-installer
+
+- id: ddev-windows-arm64-installer
+  builder: prebuilt
+  goos:
+  - windows
+  goarch:
+  - arm64
+  goamd64:
+  - v1
+  prebuilt:
+    path: .gotmp/bin/windows_arm64/ddev_windows_arm64_installer.exe
+  binary: ddev-windows-arm64-installer
+
+###### Archives ######
+archives:
+- id: ddev
+  builds:
+  - ddev
+  - mkcert
+  - ddev_bash_completion.sh
+  - ddev_zsh_completion.sh
+  - ddev_fish_completion.sh
+  format: tar.gz
+  name_template: >-
+    {{ .ProjectName }}_{{- if eq .Os "darwin" }}macos{{ else }}{{ .Os }}{{ end }}-{{- .Arch }}.v{{- .Version }}
+  format_overrides:
+  - goos: windows
+    format: zip
+  wrap_in_directory: false
+  files:
+  - LICENSE
+  allow_different_binary_count: true
+
+- id: completions-tarball
+  builds:
+  - completions-tarball
+  format: binary
+  name_template: ddev_shell_completion_scripts.v{{.Version}}.tar.gz
+
+- id: ddev-windows-amd64-installer
+  builds:
+  - ddev-windows-amd64-installer
+  format: binary
+  name_template: "ddev_windows_amd64_installer.v{{.Version}}"
+
+- id: ddev-windows-arm64-installer
+  builds:
+  - ddev-windows-arm64-installer
+  format: binary
+  name_template: "ddev_windows_arm64_installer.v{{.Version}}"
+
+checksum:
+  name_template: "checksums.txt"
+
+
+#### RELEASE ####
+release:
+  prerelease: auto
+  github:
+    owner: "{{ .Env.REPOSITORY_OWNER }}"
+    name: ddev
+
+brews:
+- name: ddev
+  ids:
+  - ddev
+  repository:
+    owner: "{{ .Env.REPOSITORY_OWNER }}"
+    name: homebrew-ddev
+  description: DDEV
+  directory: Formula
+  homepage: https://github.com/{{ .Env.REPOSITORY_OWNER }}/ddev
+  license: "Apache 2"
+  # ddev brew will only be uploaded on non-prerelease
+  skip_upload: auto
+  dependencies:
+    - name: mkcert
+
+  custom_block: |
+    head do
+      url "https://github.com/{{ .Env.REPOSITORY_OWNER }}/ddev.git", branch: "master"
+      depends_on "go" => :build
+      depends_on "make" => :build
+    end
+  install: |
+    if build.head?
+        system "sh", "-c", "git fetch --unshallow >/dev/null 2>&1" if File.exist?("#{HOMEBREW_REPOSITORY}/.git/shallow")
+        system "sh", "-c", "git fetch --tags -f >/dev/null 2>&1"
+        os = OS.mac? ? "darwin" : "linux"
+        arch = Hardware::CPU.arm? ? "arm64" : "amd64"
+        system "mkdir", "-p", "#{bin}"
+        system "make", "build", "completions"
+        system "cp", ".gotmp/bin/" + os + "_" + arch + "/ddev", "#{bin}/ddev"
+        bash_completion.install ".gotmp/bin/completions/ddev_bash_completion.sh" => "ddev"
+        zsh_completion.install ".gotmp/bin/completions/ddev_zsh_completion.sh" => "_ddev"
+        fish_completion.install ".gotmp/bin/completions/ddev_fish_completion.sh" => "ddev.fish"
+    else
+        bin.install "ddev"
+        bash_completion.install "ddev_bash_completion.sh" => "ddev"
+        zsh_completion.install "ddev_zsh_completion.sh" => "_ddev"
+        fish_completion.install "ddev_fish_completion.sh" => "ddev.fish"
+    end
+
+  test: |
+    system "#{bin}/ddev --version"
+
+- name: ddev
+  ids:
+  - ddev
+  repository:
+    owner: "{{ .Env.REPOSITORY_OWNER }}"
+    name: homebrew-ddev-edge
+  description: DDEV
+  directory: Formula
+  homepage: https://github.com/{{ .Env.REPOSITORY_OWNER }}/ddev
+  license: "Apache 2"
+  # ddev-edge brew will always be uploaded
+  skip_upload: "false"
+  dependencies:
+    - name: mkcert
+  custom_block: |
+    head do
+      url "https://github.com/{{ .Env.REPOSITORY_OWNER }}/ddev.git", branch: "master"
+      depends_on "go" => :build
+      depends_on "make" => :build
+    end
+  install: |
+    if build.head?
+        system "sh", "-c", "git fetch --unshallow >/dev/null 2>&1" if File.exist?("#{HOMEBREW_REPOSITORY}/.git/shallow")
+        system "sh", "-c", "git fetch --tags -f >/dev/null 2>&1"
+        os = OS.mac? ? "darwin" : "linux"
+        arch = Hardware::CPU.arm? ? "arm64" : "amd64"
+        system "mkdir", "-p", "#{bin}"
+        system "make", "build", "completions"
+        system "cp", ".gotmp/bin/" + os + "_" + arch + "/ddev", "#{bin}/ddev"
+        bash_completion.install ".gotmp/bin/completions/ddev_bash_completion.sh" => "ddev"
+        zsh_completion.install ".gotmp/bin/completions/ddev_zsh_completion.sh" => "_ddev"
+        fish_completion.install ".gotmp/bin/completions/ddev_fish_completion.sh" => "ddev.fish"
+    else
+        bin.install "ddev"
+        bash_completion.install "ddev_bash_completion.sh" => "ddev"
+        zsh_completion.install "ddev_zsh_completion.sh" => "_ddev"
+        fish_completion.install "ddev_fish_completion.sh" => "ddev.fish"
+    end
+
+  test: |
+    system "#{bin}/ddev --version"
+
+
+nfpms:
+- maintainer: Randy Fay
+  license: "Apache 2"
+  homepage: https://github.com/ddev/ddev
+  description: |
+    Open-source local web development tool
+  builds:
+  - ddev
+  - mkcert
+  formats:
+  - deb
+  - rpm
+  contents:
+  - src: .gotmp/bin/completions/ddev_bash_completion.sh
+    dst: /usr/share/bash-completion/completions/ddev
+    file_info:
+      mode: 0644
+  - src: .gotmp/bin/completions/ddev_fish_completion.sh
+    dst: /usr/share/fish/completions/ddev.fish
+    file_info:
+      mode: 0644
+  - src: .gotmp/bin/completions/ddev_zsh_completion.sh
+    dst:  /usr/share/zsh/vendor-completions/_ddev
+    file_info:
+      mode: 0644
+  suggests:
+    - bash-completion
+    - zsh-completions
+  overrides:
+    deb:
+      dependencies:
+      - libnss3-tools
+      - xdg-utils
+      replaces:
+      - mkcert
+    rpm:
+      dependencies:
+      - nss-tools
+      - xdg-utils
+
+snapshot:
+  version_template: '{{ .Version }}-{{.ShortCommit}}'
+
+#before_publish:
+#  - cmd: |
+#      echo "Debug before_publish"
+#      echo "REPOSITORY_OWNER='{{.Env.REPOSITORY_OWNER}}'"
+#      echo "Prerelease='{{.Prerelease}}'"
+#      echo "Skip upload evaluates to: '{{ if and (eq .Env.REPOSITORY_OWNER "ddev") (not .Prerelease) }}false{{ else }}true{{ end }}'"
+#    output: true
+
+aurs:
+- name: "{{ .Env.AUR_PACKAGE_NAME }}"
+  ids:
+  - ddev
+  homepage: "https://github.com/ddev/ddev"
+  description: "DDEV: a local web development environment"
+  maintainers:
+  - 'Randy Fay <randy.fay@ddev.com>'
+  license: "Apache 2"
+  # main ddev repo will only be uploaded on non-prerelease
+  skip_upload: auto
+  private_key: '{{ .Env.AUR_SSH_PRIVATE_KEY }}'
+  # AUR_STABLE_GIT_URL should be something like ssh://aur@aur.archlinux.org/ddev-bin.git or ssh://aur@aur.archlinux.org/rfay-test-ddev-bin.git
+  git_url: '{{ .Env.AUR_STABLE_GIT_URL }}'
+  depends:
+  - docker
+  - mkcert
+  optdepends:
+  - 'bash-completion: subcommand completion support'
+
+  package: |-
+    # bin
+    install -Dm755 "./ddev" "${pkgdir}/usr/bin/ddev"
+    install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/ddev/LICENSE"
+
+    # completions
+    mkdir -p "${pkgdir}/usr/share/bash-completion/completions/"
+    mkdir -p "${pkgdir}/usr/share/zsh/site-functions/"
+    mkdir -p "${pkgdir}/usr/share/fish/vendor_completions.d/"
+    install -Dm644 "./ddev_bash_completion.sh" "${pkgdir}/usr/share/bash-completion/completions/ddev"
+    install -Dm644 "./ddev_zsh_completion.sh" "${pkgdir}/usr/share/zsh/site-functions/_ddev"
+    install -Dm644 "./ddev_fish_completion.sh" "${pkgdir}/usr/share/fish/vendor_completions.d/ddev.fish"
+
+  # Git author used to commit to the repository.
+  # Defaults are shown below.
+  commit_author:
+    name: Randy Fay
+    email: randy.fay@ddev.com
+
+- name: "{{ .Env.AUR_PACKAGE_NAME }}-edge"
+  ids:
+  - ddev
+  homepage: "https://github.com/ddev/ddev"
+  description: "DDEV: a local web development environment (edge)"
+  maintainers:
+  - 'Randy Fay <randy.fay@ddev.com>'
+  license: "Apache 2"
+  # Always upload, even on prerelease
+  skip_upload: "false"
+  private_key: '{{ .Env.AUR_SSH_PRIVATE_KEY }}'
+  # AUR_EDGE_GIT_URL should be something like ssh://aur@aur.archlinux.org/ddev-edge-bin.git or ssh://aur@aur.archlinux.org/rfay-test-ddev-edge-bin.git
+  git_url: '{{ .Env.AUR_EDGE_GIT_URL }}'
+  depends:
+  - docker
+  - mkcert
+  optdepends:
+  - 'bash-completion: subcommand completion support'
+
+  package: |-
+    # bin
+    install -Dm755 "./ddev" "${pkgdir}/usr/bin/ddev"
+    install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/ddev/LICENSE"
+
+    # completions
+    mkdir -p "${pkgdir}/usr/share/bash-completion/completions/"
+    mkdir -p "${pkgdir}/usr/share/zsh/site-functions/"
+    mkdir -p "${pkgdir}/usr/share/fish/vendor_completions.d/"
+    install -Dm644 "./ddev_bash_completion.sh" "${pkgdir}/usr/share/bash-completion/completions/ddev"
+    install -Dm644 "./ddev_zsh_completion.sh" "${pkgdir}/usr/share/zsh/site-functions/_ddev"
+    install -Dm644 "./ddev_fish_completion.sh" "${pkgdir}/usr/share/fish/vendor_completions.d/ddev.fish"
+
+  # Git author used to commit to the repository.
+  # Defaults are shown below.
+  commit_author:
+    name: Randy Fay
+    email: randy.fay@ddev.com
+
+furies:
+- account: "{{ .Env.FURY_ACCOUNT }}"
+  secret_name: "FURY_TOKEN"
+  disable: '{{ ne .Prerelease "" }}'
+
+
+dockerhub:
+
+  # ddev-dbserver
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-5.5'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.0'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.1'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.2'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.3'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.4'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.5'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.6'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.7'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.8'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.11'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-11.4'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.5'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.6'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.7'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-8.0'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's ddev-dbserver image
+    full_description:
+      from_file:
+        path: ./containers/ddev-dbserver/README.md
+
+  #ddev-gitpod-base
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-gitpod-base'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: Gitpod integration for DDEV
+    full_description:
+      from_file:
+        path: ./containers/ddev-gitpod-base/README.md
+
+  #ddev-php-base
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-php-base'
+      - '{{ .Env.DOCKER_ORG }}/ddev-php-prod'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's ddev-php-base image, base image for ddev-webserver
+    full_description:
+      from_file:
+        path: ./containers/ddev-php-base/README.md
+
+  #ddev-ssh-agent
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-ssh-agent'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's ddev-ssh-agent image
+    full_description:
+      from_file:
+        path: ./containers/ddev-ssh-agent/README.md
+
+  #ddev-traefik-router
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-traefik-router'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's ddev-traefik-router, a wrapper on traefik
+    full_description:
+      from_file:
+        path: ./containers/ddev-traefik-router/README.md
+
+  #ddev-utilities
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-utilities'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: Utility provider for jq, base64, etc
+    full_description:
+      from_url:
+        url: https://github.com/ddev/ddev-utilities/raw/main/README.md
+
+  #ddev-webserver
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/ddev-webserver'
+      - '{{ .Env.DOCKER_ORG }}/ddev-webserver-prod'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's ddev-webserver image
+    full_description:
+      from_file:
+        path: ./containers/ddev-webserver/README.md
+
+  #mysql == mysql-arm64-images
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/mysql'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: ARM64 base images for ddev-dbserver-mysql-8.0 and 5.7
+    full_description:
+      from_url:
+        url: https://github.com/ddev/mysql-arm64-images/raw/main/README.md
+
+  #mysql-client-build
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/mysql-client-build'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: Utility builder for mysql client binaries
+    full_description:
+      from_url:
+        url: https://github.com/ddev/mysql-client-build/raw/main/README.md
+
+  #test-ssh-server
+  - images:
+      - '{{ .Env.DOCKER_ORG }}/test-ssh-server'
+    username: '{{ .Env.DOCKERHUB_USERNAME }}'
+    secret_name: "DOCKERHUB_TOKEN"
+    description: DDEV's test-ssh-server image, used only for automated tests
+    full_description:
+      from_file:
+        path: ./containers/test-ssh-server/README.md
+
+#chocolateys:
+#    name: ddev-test
+#
+#    package_source_url: https://github.com/ddev/ddev/tree/master/winpkg/chocolatey
+#
+#    # Your app's owner.
+#    # It basically means you.
+#    owners: DDEV Foundation
+#
+#    # Your app's authors (probably you).
+#    authors: DDEV Foundation
+#
+#    project_url: https://ddev.com/
+#
+#    # Which format to use.
+#    #
+#    # Valid options are:
+#    # - 'msi':     msi installers (requires the MSI pipe configured, Pro only)
+#    # - 'archive': archives (only if format is zip),
+#    #
+#    # Default: 'archive'.
+#    # This feature is only available in GoReleaser Pro.
+#    use: msi
+#
+#    # URL which is determined by the given Token (github,
+#    # gitlab or gitea).
+#    #
+#    # Default: depends on the git remote.
+#    # Templates: allowed.
+##    url_template: "https://github.com/foo/bar/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+#
+##    icon_url: "https://rawcdn.githack.com/foo/bar/efbdc760-395b-43f1-bf69-ba25c374d473/icon.png"
+#
+#    # Your app's copyright details.
+#    #
+#    # Templates: allowed.
+#    copyright: DDEV Foundation
+#
+#    license_url: https://github.com/ddev/ddev/blob/master/LICENSE
+#    require_license_acceptance: true
+#
+#    # Your app's source url.
+#    project_source_url: https://github.com/ddev/ddev
+#
+#    # Your app's documentation url.
+#    docs_url: https://ddev.readthedocs.io
+#
+#    # App's bugtracker url.
+#    bug_tracker_url: https://github.com/ddev/ddev/issues
+#
+#    tags: "ddev drupal TYPO3 backdrop php"
+#
+#    summary: DDEV is a local web development tool optimized for PHP projects and CMSs.
+#
+#    # This the description of your chocolatey package.
+#    # Supports markdown.
+#    description: |
+#      {{ .ProjectName }} allows developers to use both nginx and apache, and many versions of PHP, with no host configurations.
+#
+#    release_notes: "https://github.com/{{ .Env.REPOSITORY_OWNER }}/ddev/releases/tag/v{{ .Version }}"
+#
+#    # App's dependencies
+#    # The version is not required.
+#    dependencies:
+#      - id: gsudo
+#      - id: ngrok
+#      - id: mkcert
+#
+#    api_key: "{{ .Env.CHOCOLATEY_API_KEY }}"
+#
+#    # The source repository that will push the package to.
+#    source_repo: "https://push.chocolatey.org/"
+#
+#    # Setting this will prevent goreleaser to actually try to push the package
+#    # to chocolatey repository, leaving the responsibility of publishing it to
+#    # the user.
+#    skip_publish: false

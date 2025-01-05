@@ -5,6 +5,8 @@ set -o errexit
 # Basic tools
 
 set -x
+export GO_VERSION=1.22.1
+export DEBIAN_FRONTEND=noninteractive
 
 if [ ! -z "${DOCKERHUB_PULL_USERNAME:-}" ]; then
   set +x
@@ -13,7 +15,7 @@ if [ ! -z "${DOCKERHUB_PULL_USERNAME:-}" ]; then
 fi
 
 sudo apt-get -qq update
-sudo rm -f /usr/local/bin/jq && sudo apt-get -qq install -y mysql-client zip jq expect nfs-kernel-server build-essential curl git libnss3-tools libcurl4-gnutls-dev
+sudo rm -f /usr/local/bin/jq && sudo apt-get -qq install -y mysql-client postgresql-client zip jq expect nfs-kernel-server build-essential curl git libnss3-tools libcurl4-gnutls-dev
 
 curl -sSL --fail -o /tmp/ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm64.zip && sudo unzip -o -d /usr/local/bin /tmp/ngrok.zip
 
@@ -22,10 +24,12 @@ echo "capath=/etc/ssl/certs/" >>~/.curlrc
 
 . ~/.bashrc
 
-git clone --branch v1.2.1 https://github.com/bats-core/bats-core.git /tmp/bats-core && pushd /tmp/bats-core >/dev/null && sudo ./install.sh /usr/local
+curl -sSL https://golang.org/dl/go${GO_VERSION}.linux-arm64.tar.gz -o /tmp/go.tgz && sudo rm -rf /usr/local/go && sudo tar -zxf /tmp/go.tgz -C /usr/local
+
+git clone --branch v1.11.0 https://github.com/bats-core/bats-core.git /tmp/bats-core && pushd /tmp/bats-core >/dev/null && sudo ./install.sh /usr/local
 
 # Install mkcert
-sudo curl -sSL https://github.com/drud/mkcert/releases/download/v1.4.6/mkcert-v1.4.6-linux-arm64 -o /usr/local/bin/mkcert && sudo chmod +x /usr/local/bin/mkcert
+sudo curl --fail -JL -s -o /usr/local/bin/mkcert "https://dl.filippo.io/mkcert/latest?for=linux/arm64" && sudo chmod +x /usr/local/bin/mkcert
 mkcert -install
 
 primary_ip=$(ip route get 1 | awk '{gsub("^.*src ",""); print $1; exit}')
@@ -58,4 +62,4 @@ docker info
 docker version
 docker-compose version
 lsb_release -a
-docker buildx create --name ddev-builder-multi --use  
+docker buildx use multi-arch-builder || docker buildx create --name multi-arch-builder --use

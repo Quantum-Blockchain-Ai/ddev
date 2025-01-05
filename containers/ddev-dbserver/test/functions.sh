@@ -1,8 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+SKIP_SSL="--skip-ssl"
+if mysql --help | grep -q -v -- '--skip-ssl'; then SKIP_SSL=""; fi
 
 function basic_setup {
     export CONTAINER_NAME="testserver"
-    export HOSTPORT=33000
+    export HOSTPORT=31000
     export MYTMPDIR="${HOME}/tmp/testserver-sh_${RANDOM}_$$"
     export outdir="${HOME}/tmp/mariadb_testserver/output_${RANDOM}_$$"
     export VOLUME="dbserver_test-${RANDOM}_$$"
@@ -10,19 +13,19 @@ function basic_setup {
     export MOUNTUID=33
     export MOUNTGID=33
 
-    # Homebrew mysql client realy really wants /usr/local/etc/my.cnf.d
+    # Homebrew mysql client really really wants /usr/local/etc/my.cnf.d
     if [ "${OS:-$(uname)}" != "Windows_NT" ] && [ ! -d "$(brew --prefix)/etc/my.cnf.d" ]; then
         mkdir -p "$(brew --prefix)/etc/my.cnf.d" || sudo mkdir -p "$(brew --prefix)/etc/my.cnf.d"
     fi
     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
     # Initialize the volume with the correct ownership
-    docker run --rm -v "${VOLUME}:/var/lib/mysql:nocopy" busybox chown -R ${MOUNTUID}:${MOUNTGID} /var/lib/mysql
+    docker run --rm -v "${VOLUME}:/var/lib/mysql:nocopy" busybox:stable chown -R ${MOUNTUID}:${MOUNTGID} /var/lib/mysql
 }
 
 function teardown {
-  docker rm -f ${CONTAINER_NAME}
-  docker volume rm $VOLUME || true
+  docker rm -f ${CONTAINER_NAME} >/dev/null
+  docker volume rm $VOLUME >/dev/null || true
 }
 
 # Wait for container to be ready.

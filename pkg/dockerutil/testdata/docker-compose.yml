@@ -1,5 +1,3 @@
-version: '3.6'
-
 services:
   db:
     container_name: ddev-test-db
@@ -23,8 +21,6 @@ services:
     restart: always
     depends_on:
       - db
-    links:
-      - db:db
     ports:
       - "80"
       - 8025
@@ -43,6 +39,7 @@ services:
       start_period: 20s
       timeout: 120s
 networks:
-  default:
-    external:
-      name: ddev_default
+  ddev:
+    name: ddev
+    external: true
+

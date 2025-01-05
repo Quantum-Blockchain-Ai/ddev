@@ -1,133 +1,235 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
-	"github.com/drud/ddev/pkg/ddevapp"
-	"github.com/drud/ddev/pkg/dockerutil"
-	"github.com/drud/ddev/pkg/output"
-	"github.com/drud/ddev/pkg/util"
-	"github.com/gosuri/uitable"
+	"sort"
+	"strings"
+
+	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/styles"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/version"
+
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 )
 
 // DescribeCommand represents the `ddev config` command
 var DescribeCommand = &cobra.Command{
-	Use:   "describe [projectname]",
-	Short: "Get a detailed description of a running ddev project.",
-	Long: `Get a detailed description of a running ddev project. Describe provides basic
-information about a ddev project, including its name, location, url, and status.
+	ValidArgsFunction: ddevapp.GetProjectNamesFunc("all", 1),
+	Use:               "describe [projectname]",
+	Aliases:           []string{"status", "st", "desc"},
+	Short:             "Get a detailed description of a running DDEV project.",
+	Long: `Get a detailed description of a running DDEV project. Describe provides basic
+information about a DDEV project, including its name, location, url, and status.
 It also provides details for MySQL connections, and connection information for
-additional services like MailHog and phpMyAdmin. You can run 'ddev describe' from
+additional services like Mailpit. You can run 'ddev describe' from
 a project directory to describe that project, or you can specify a project to describe by
-running 'ddev describe <projectname>.`,
-	Example: "ddev describe\nddev describe <projectname>",
-	Run: func(cmd *cobra.Command, args []string) {
+running 'ddev describe <projectname>'.`,
+	Example: "ddev describe\nddev describe <projectname>\nddev status\nddev st",
+	Run: func(_ *cobra.Command, args []string) {
 		if len(args) > 1 {
 			util.Failed("Too many arguments provided. Please use 'ddev describe' or 'ddev describe [projectname]'")
 		}
 
-		projects, err := getRequestedProjects(args, false)
+		apps, err := getRequestedProjects(args, false)
 		if err != nil {
 			util.Failed("Failed to describe project(s): %v", err)
 		}
-		project := projects[0]
+		app := apps[0]
 
-		if err := ddevapp.CheckForMissingProjectFiles(project); err != nil {
-			util.Failed("Failed to describe %s: %v", project.Name, err)
+		if err := ddevapp.CheckForMissingProjectFiles(app); err != nil {
+			util.Failed("Failed to describe %s: %v", app.Name, err)
 		}
 
-		desc, err := project.Describe(false)
+		desc, err := app.Describe(false)
 		if err != nil {
-			util.Failed("Failed to describe project %s: %v", project.Name, err)
+			util.Failed("Failed to describe project %s: %v", app.Name, err)
 		}
 
-		renderedDesc, err := renderAppDescribe(desc)
+		renderedDesc, err := renderAppDescribe(app, desc)
 		util.CheckErr(err) // We shouldn't ever end up with an unrenderable desc.
 		output.UserOut.WithField("raw", desc).Print(renderedDesc)
 	},
 }
 
 // renderAppDescribe takes the map describing the app and renders it for plain-text output
-func renderAppDescribe(desc map[string]interface{}) (string, error) {
-
-	var output string
-
+func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (string, error) {
 	status := desc["status"]
 
-	appTable := ddevapp.CreateAppTable()
-	ddevapp.RenderAppRow(appTable, desc)
-	output = fmt.Sprint(appTable)
+	var out bytes.Buffer
+
+	t := table.NewWriter()
+	t.SetOutputMirror(&out)
+	styles.SetGlobalTableStyle(t)
+	tWidth, _ := nodeps.GetTerminalWidthHeight()
+	urlPortWidth := float64(35)
+	infoWidth := 30
+	urlPortWidthFactor := float64(2.5)
+	if tWidth != 0 {
+		urlPortWidth = float64(tWidth) / urlPortWidthFactor
+		infoWidth = tWidth / 4
+	}
+	util.Debug("Detected terminal width=%v urlPortWidth=%v infoWidth=%v", tWidth, urlPortWidth, infoWidth)
+	if !globalconfig.DdevGlobalConfig.SimpleFormatting {
+		t.SetColumnConfigs([]table.ColumnConfig{
+			{
+				Name:     "Service",
+				WidthMax: 12,
+			},
+			{
+				Name: "URL/Port",
+				//WidthMax: int(urlPortWidth),
+			},
+			{
+				Name:     "Info",
+				WidthMax: infoWidth,
+			},
+		})
+	}
+	dockerPlatform, err := version.GetDockerPlatform()
+	if err != nil {
+		util.Warning("Unable to determine Docker platform: %v", err)
+	}
+
+	router := globalconfig.DdevGlobalConfig.Router
+	if nodeps.ArrayContainsString(app.GetOmittedContainers(), `ddev-router`) {
+		router = "disabled"
+	}
+
+	t.SetTitle(fmt.Sprintf("Project: %s %s %s\nDocker platform: %s\nRouter: %s", app.Name, desc["shortroot"].(string), app.GetPrimaryURL(), dockerPlatform, router))
+	t.AppendHeader(table.Row{"Service", "Stat", "URL/Port", "Info"})
 
 	// Only show extended status for running sites.
 	if status == ddevapp.SiteRunning {
-		output = output + "\n\nProject Information\n-------------------\n"
-		siteInfo := uitable.New()
-		siteInfo.AddRow("PHP version:", desc["php_version"])
-		siteInfo.AddRow("NFS mount enabled:", desc["nfs_mount_enabled"])
-		var dbinfo map[string]interface{}
+		serviceNames := []string{}
+		// Get a list of services in the order we want them, with web and db first
+		serviceMap := desc["services"].(map[string]map[string]interface{})
+		for k := range serviceMap {
+			if k != "web" && k != "db" {
+				serviceNames = append(serviceNames, k)
+			}
+		}
+		sort.Strings(serviceNames)
+
 		if _, ok := desc["dbinfo"]; ok {
-			dbinfo = desc["dbinfo"].(map[string]interface{})
-			siteInfo.AddRow("Database type:", dbinfo["database_type"])
-			if _, ok := dbinfo["mariadb_version"]; ok {
-				siteInfo.AddRow("MariaDB version:", dbinfo["mariadb_version"])
+			serviceNames = append([]string{"db"}, serviceNames...)
+		}
+		serviceNames = append([]string{"web"}, serviceNames...)
+
+		for _, k := range serviceNames {
+			v := serviceMap[k]
+			httpURL := ""
+			urlPortParts := []string{}
+			extraInfo := []string{}
+
+			switch {
+			// Normal case, using ddev-router based URLs
+			case !ddevapp.IsRouterDisabled(app):
+				if httpsURL, ok := v["https_url"].(string); ok && !app.CanUseHTTPOnly() {
+					urlPortParts = append(urlPortParts, httpsURL)
+				} else if httpURL, ok = v["http_url"].(string); ok {
+					urlPortParts = append(urlPortParts, httpURL)
+				}
+
+			// Gitpod, web container only, using port proxied by Gitpod
+			case (nodeps.IsGitpod() || nodeps.IsCodespaces()) && k == "web":
+				urlPortParts = append(urlPortParts, app.GetPrimaryURL())
+
+			// Router disabled, but not because of Gitpod, use direct http url
+			case ddevapp.IsRouterDisabled(app):
+				if httpURL, ok := v["host_http_url"].(string); ok && httpURL != "" {
+					urlPortParts = append(urlPortParts, httpURL)
+				}
 			}
-			if _, ok := dbinfo["mysql_version"]; ok {
-				siteInfo.AddRow("MySQL version:", dbinfo["mysql_version"])
+
+			portStr := "InDocker"
+			var portMappingDockerHost = map[string]string{}
+			if p, ok := v["host_ports_mapping"].([]map[string]string); ok && len(p) != 0 {
+				portStr += " -> Host"
+				for _, portMapping := range p {
+					portMappingDockerHost[portMapping["exposed_port"]] = portMapping["host_port"]
+				}
 			}
-		}
+			portStr += ":"
 
-		output = output + fmt.Sprintln(siteInfo)
-		urlTable := uitable.New()
-		urlTable.MaxColWidth = 80
-		for _, url := range desc["urls"].([]string) {
-			urlTable.AddRow(url)
-		}
-		output = output + "\nURLs\n----\n"
-
-		output = output + fmt.Sprintln(urlTable)
-
-		dockerIP, err := dockerutil.GetDockerIP()
-		if err != nil {
-			return "", err
-		}
-
-		if dbinfo != nil {
-			output = output + "\n" + "MySQL/MariaDB Credentials\n-------------------------\n" + `Username: "db", Password: "db", Default database: "db"` + "\n"
-			output = output + "\n" + `or use root credentials when needed: Username: "root", Password: "root"` + "\n\n"
-
-			output = output + "Database hostname and port INSIDE container: db:3306\n"
-			output = output + fmt.Sprintf("To connect to db server inside container or in project settings files: \nmysql --host=db --user=db --password=db --database=db\n")
-
-			output = output + fmt.Sprintf("Database hostname and port from HOST: %s:%d\n", dockerIP, dbinfo["published_port"])
-			output = output + fmt.Sprintf("To connect to mysql from your host machine, \nmysql --host=%s --port=%d --user=db --password=db --database=db\n", dockerIP, dbinfo["published_port"])
-		} else {
-			output = output + "\n" + "DB container is excluded, so no db information provided\n"
-		}
-
-		output = output + "\nOther Services\n--------------\n"
-		other := uitable.New()
-		other.AddRow("MailHog (https):", desc["mailhog_https_url"])
-		other.AddRow("MailHog:", desc["mailhog_url"])
-		if _, ok := desc["phpmyadmin_https_url"]; ok {
-			other.AddRow("phpMyAdmin (https):", desc["phpmyadmin_https_url"])
-		}
-		if _, ok := desc["phpmyadmin_url"]; ok {
-			other.AddRow("phpMyAdmin:", desc["phpmyadmin_url"])
-		}
-		for k, v := range desc["extra_services"].(map[string]map[string]string) {
-			if httpsURL, ok := v["https_url"]; ok {
-				other.AddRow(k+" (https):", httpsURL)
+			if p, ok := v["exposed_ports"].(string); ok {
+				if p != "" {
+					for _, exposedPort := range strings.Split(p, ",") {
+						portStr += "\n - " + v["short_name"].(string) + ":" + exposedPort
+						if host, ok := portMappingDockerHost[exposedPort]; ok {
+							portStr += " -> 127.0.0.1:" + host
+						}
+					}
+					urlPortParts = append(urlPortParts, portStr)
+				} else {
+					urlPortParts = append(urlPortParts, portStr+" "+v["short_name"].(string))
+				}
 			}
-			if httpURL, ok := v["http_url"]; ok {
-				other.AddRow(k+":", httpURL)
-			}
-		}
-		output = output + fmt.Sprint(other)
 
-		output = output + "\n" + ddevapp.RenderRouterStatus() + "\t" + ddevapp.RenderSSHAuthStatus()
+			// Get extra info for web container
+			if k == "web" {
+				extraInfo = append(extraInfo, fmt.Sprintf("%s PHP%s\n%s\ndocroot:'%s'", desc["type"], desc["php_version"], desc["webserver_type"], desc["docroot"]))
+				extraInfo = append(extraInfo, fmt.Sprintf("Perf mode: %s", desc["performance_mode"].(string)))
+				if v, ok := desc["nodejs_version"].(string); ok {
+					extraInfo = append(extraInfo, fmt.Sprintf("NodeJS:%s", v))
+				}
+			}
+
+			// Get extra info for db container
+			if k == "db" {
+				extraInfo = append(extraInfo, app.Database.Type+":"+app.Database.Version)
+				extraInfo = append(extraInfo, "User/Pass: 'db/db'\nor 'root/root'")
+			}
+			t.AppendRow(table.Row{k, ddevapp.FormatSiteStatus(v["status"].(string)), strings.Join(urlPortParts, "\n"), strings.Join(extraInfo, "\n")})
+		}
+
+		if !ddevapp.IsRouterDisabled(app) {
+			// Mailpit stanza
+			mailpitURL := ""
+			if _, ok := desc["mailpit_url"]; ok {
+				mailpitURL = desc["mailpit_url"].(string)
+			}
+			if _, ok := desc["mailpit_https_url"]; ok && !app.CanUseHTTPOnly() {
+				mailpitURL = desc["mailpit_https_url"].(string)
+			}
+			t.AppendRow(table.Row{"Mailpit", "", fmt.Sprintf("Mailpit: %s\nLaunch: ddev mailpit", mailpitURL)})
+
+			//WebExtraExposedPorts stanza
+			for _, extraPort := range app.WebExtraExposedPorts {
+				if app.CanUseHTTPOnly() {
+					t.AppendRow(table.Row{extraPort.Name, "", fmt.Sprintf("http://%s:%d\nInDocker: web:%d", app.GetHostname(), extraPort.HTTPPort, extraPort.WebContainerPort)})
+				} else {
+					t.AppendRow(table.Row{extraPort.Name, "", fmt.Sprintf("https://%s:%d\nInDocker: web:%d", app.GetHostname(), extraPort.HTTPSPort, extraPort.WebContainerPort)})
+				}
+			}
+
+			// All URLs stanza
+			_, _, urls := app.GetAllURLs()
+			s := strings.Join(urls, ", ")
+			urlString := text.WrapSoft(s, int(urlPortWidth))
+			t.AppendRow(table.Row{"Project URLs", "", urlString})
+		}
+		bindInfo := []string{}
+		if app.BindAllInterfaces {
+			bindInfo = append(bindInfo, "bind-all-interfaces ENABLED")
+		}
+		if globalconfig.DdevGlobalConfig.RouterBindAllInterfaces && !ddevapp.IsRouterDisabled(app) {
+			bindInfo = append(bindInfo, "router-bind-all-interfaces ENABLED")
+		}
+		if len(bindInfo) > 0 {
+			t.AppendRow(table.Row{"Network", "", strings.Join(bindInfo, "\n")})
+		}
 	}
 
-	return output, nil
+	t.Render()
+
+	return out.String(), nil
 }
 
 func init() {

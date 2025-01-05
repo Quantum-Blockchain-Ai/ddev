@@ -1,12 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env sh
+
+# This uses /bin/sh, so it doesn't initialize profile/bashrc/etc
 
 # ddev-webserver healthcheck
 
-set -eo pipefail
+set -e
 
 sleeptime=59
 
-# Make sure that both phpstatus, mounted code, and mailhog
+# Make sure that phpstatus, mounted code, webserver and mailpit
 # are working.
 # Since docker doesn't provide a lazy period for startup,
 # we track health. If the last check showed healthy
@@ -14,39 +16,52 @@ sleeptime=59
 # sleep at startup. This requires the timeout to be set
 # higher than the sleeptime used here.
 if [ -f /tmp/healthy ]; then
-    printf "container was previously healthy, so sleeping ${sleeptime} seconds before continuing healthcheck...  "
+    printf "container was previously healthy, so sleeping %s seconds before continuing healthcheck... " ${sleeptime}
     sleep ${sleeptime}
 fi
 
-phpstatus=false
-htmlaccess=false
-mailhog=false
-if curl --fail -s 127.0.0.1/phpstatus >/dev/null ; then
-    phpstatus=true
-    printf "phpstatus: OK "
-else
-    printf "phpstatus: FAILED "
-fi
+# Shutdown the supervisor if one of the critical processes is in the FATAL state
+for service in php-fpm nginx apache2; do
+  if supervisorctl status "${service}" 2>/dev/null | grep -q FATAL; then
+    printf "%s:FATAL " "${service}"
+    supervisorctl shutdown
+  fi
+done
+
+phpstatus="false"
+htmlaccess="false"
+mailpit="false"
 
 if ls /var/www/html >/dev/null; then
-    htmlstatus=true
-    printf "/var/www/html: OK "
+    htmlaccess="true"
+    printf "/var/www/html:OK "
 else
-    printf "/var/www/html: FAILED"
+    printf "/var/www/html:FAILED "
 fi
 
 if curl --fail -s 127.0.0.1:8025 >/dev/null; then
-    mailhog=true
-    printf "mailhog: OK " ;
+    mailpit="true"
+    printf "mailpit:OK "
 else
-    printf "mailhog: FAILED "
+    printf "mailpit:FAILED "
 fi
 
-if ${phpstatus} = true -a ${htmlaccess} = true -a ${mailhog} = true ; then
+# If DDEV_WEBSERVER_TYPE is not set, use reasonable default
+DDEV_WEBSERVER_TYPE=${DDEV_WEBSERVER_TYPE:-nginx-fpm}
+
+if [ "${DDEV_WEBSERVER_TYPE#*-}" = "fpm" ]; then
+  if curl --fail -s 127.0.0.1/phpstatus >/dev/null; then
+    phpstatus="true"
+    printf "phpstatus:OK "
+  else
+    printf "phpstatus:FAILED "
+  fi
+fi
+
+if [ "${phpstatus}" = "true" ] && [ "${mailpit}" = "true" ]; then
     touch /tmp/healthy
     exit 0
 fi
 rm -f /tmp/healthy
+
 exit 1
-
-
